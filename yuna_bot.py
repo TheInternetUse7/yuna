@@ -1,13 +1,18 @@
 # yuna_bot.py
 import os
+import logging
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 import database
 import ai_manager
+from logging_setup import setup_logging
 
-# Load environment variables
+# Load environment variables and logging
 load_dotenv()
+setup_logging()
+log = logging.getLogger(__name__)
+
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
@@ -21,21 +26,22 @@ bot = commands.Bot(command_prefix="/", intents=intents)
 @bot.event
 async def on_ready():
     """Event that fires when the bot is connected and ready."""
-    print(f"{bot.user} has connected to Discord!")
-    print("Initializing database...")
+    log.info(f"{bot.user} has connected to Discord!")
+    log.info("Initializing database...")
     database.initialize_database()
-    # After initializing, you should manually add your Groq key
+
+    # After initializing, store GROQ key if provided
     if GROQ_API_KEY:
         database.add_api_key("groq", GROQ_API_KEY)
-        print("Groq API key loaded from .env and stored in database.")
+        log.info("Groq API key loaded from .env and stored in database.")
     else:
-        print(
-            "Warning: GROQ_API_KEY not found in .env file. The /chat command will not work."
+        log.warning(
+            "GROQ_API_KEY not found in .env file. The /chat command will not work unless a key is added."
         )
 
-    print("Syncing slash commands...")
+    log.info("Syncing slash commands...")
     await bot.tree.sync()
-    print("Yuna is ready.")
+    log.info("Yuna is ready.")
 
 
 @bot.tree.command(name="chat", description="Chat with the Yuna AI.")
@@ -55,7 +61,7 @@ async def chat(interaction: discord.Interaction, *, prompt: str):
         await interaction.followup.send(f"> {prompt}\n\n{response_text}")
 
     except Exception as e:
-        print(f"Error in /chat command: {e}")
+        log.error("Error in /chat command", exc_info=True)
         await interaction.followup.send(
             "An unexpected error occurred. Please check the logs."
         )
@@ -237,16 +243,16 @@ async def on_message(message: discord.Message):
             # Send the response
             await message.reply(response_text)
 
-        except Exception as e:
-            print(f"Error in on_message: {e}")
+        except Exception:
+            log.exception("Unhandled exception in on_message")
             await message.channel.send(
-                "An unexpected error occurred. Please check the logs."
+                "An unexpected error occurred. The developers have been notified."
             )
 
 
 def main():
     if not DISCORD_TOKEN:
-        print("Error: DISCORD_TOKEN not found in .env file.")
+        log.error("DISCORD_TOKEN not found in .env file.")
         return
     bot.run(DISCORD_TOKEN)
 
