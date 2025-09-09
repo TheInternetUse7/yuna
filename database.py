@@ -1,4 +1,3 @@
-# database.py
 import sqlite3
 import logging
 from typing import Optional
@@ -12,15 +11,7 @@ def initialize_database() -> None:
     """Creates the database and necessary tables if they don't exist."""
     con = sqlite3.connect(DB_NAME)
     cur = con.cursor()
-    # Table for storing API keys for different services
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS api_keys (
-            service_name TEXT PRIMARY KEY,
-            api_key TEXT NOT NULL
-        )
-    """
-    )
+
     # Table for storing designated AI channels
     cur.execute(
         """
@@ -30,6 +21,7 @@ def initialize_database() -> None:
         )
     """
     )
+
     # Table for tracking rate limit cooldowns
     cur.execute(
         """
@@ -39,6 +31,20 @@ def initialize_database() -> None:
         )
     """
     )
+
+    # Table for storing preferred model overrides per guild
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS preferred_models (
+            guild_id INTEGER PRIMARY KEY,
+            provider_name TEXT NOT NULL,
+            model_name TEXT NOT NULL,
+            set_by_user_id INTEGER NOT NULL,
+            set_at INTEGER NOT NULL
+        )
+    """
+    )
+
     con.commit()
     con.close()
     log.info("Database initialized.")
@@ -75,26 +81,11 @@ def is_ai_channel(channel_id: int) -> bool:
     return result is not None
 
 
-def get_api_key(service_name: str) -> Optional[str]:
-    """Retrieves an API key for a given service."""
-    con = sqlite3.connect(DB_NAME)
-    cur = con.cursor()
-    cur.execute("SELECT api_key FROM api_keys WHERE service_name = ?", (service_name,))
-    result = cur.fetchone()
-    con.close()
-    return result[0] if result else None
-
-
 def set_cooldown(service_name: str, cooldown_seconds: int) -> None:
-    """Sets a cooldown (seconds from now) for a specific service.
-
-    Args:
-        service_name: Provider identifier (e.g., 'groq').
-        cooldown_seconds: Number of seconds from now to block the provider.
-    """
+    """Sets a cooldown for a specific service."""
     import time
 
-    cooldown_until = int(time.time()) + int(cooldown_seconds)
+    cooldown_until = int(time.time()) + cooldown_seconds
     con = sqlite3.connect(DB_NAME)
     cur = con.cursor()
     cur.execute(
@@ -103,11 +94,13 @@ def set_cooldown(service_name: str, cooldown_seconds: int) -> None:
     )
     con.commit()
     con.close()
-    log.info("Set cooldown for %s until %s", service_name, cooldown_until)
+    log.info(
+        f"Set cooldown for {service_name} until {cooldown_until} ({cooldown_seconds}s)"
+    )
 
 
 def is_on_cooldown(service_name: str) -> bool:
-    """Returns True if the given service is currently on cooldown."""
+    """Checks if a service is currently on cooldown."""
     import time
 
     con = sqlite3.connect(DB_NAME)
@@ -119,22 +112,93 @@ def is_on_cooldown(service_name: str) -> bool:
     result = cur.fetchone()
     con.close()
     if result:
-        try:
-            return time.time() < float(result[0])
-        except Exception:
-            return False
+        is_cooled = time.time() < result[0]
+        if not is_cooled:
+            # Cooldown has expired, clean up the record
+            clear_expired_cooldown(service_name)
+        return is_cooled
     return False
 
 
-# You can add a function to insert keys manually for now
-def add_api_key(service_name: str, api_key: str) -> None:
-    """Stores or updates an API key for a provider."""
+def clear_expired_cooldown(service_name: str) -> None:
+    """Removes expired cooldown records."""
     con = sqlite3.connect(DB_NAME)
     cur = con.cursor()
     cur.execute(
-        "INSERT OR REPLACE INTO api_keys (service_name, api_key) VALUES (?, ?)",
-        (service_name, api_key),
+        "DELETE FROM rate_limit_cooldowns WHERE service_name = ?", (service_name,)
     )
     con.commit()
     con.close()
-    log.info("API key stored for service %s", service_name)
+    log.debug(f"Cleared expired cooldown for {service_name}")
+
+
+def get_cooldown_status() -> dict:
+    """Returns the current cooldown status for all services."""
+    import time
+
+    con = sqlite3.connect(DB_NAME)
+    cur = con.cursor()
+    cur.execute("SELECT service_name, cooldown_until FROM rate_limit_cooldowns")
+    results = cur.fetchall()
+    con.close()
+
+    current_time = time.time()
+    status = {}
+    for service_name, cooldown_until in results:
+        if current_time < cooldown_until:
+            status[service_name] = {
+                "on_cooldown": True,
+                "remaining_seconds": int(cooldown_until - current_time),
+            }
+        else:
+            status[service_name] = {"on_cooldown": False, "remaining_seconds": 0}
+
+    return status
+
+
+def set_preferred_model(
+    guild_id: int, provider_name: str, model_name: str, user_id: int
+) -> None:
+    """Sets a preferred model override for a specific guild."""
+    import time
+
+    con = sqlite3.connect(DB_NAME)
+    cur = con.cursor()
+    cur.execute(
+        "INSERT OR REPLACE INTO preferred_models (guild_id, provider_name, model_name, set_by_user_id, set_at) VALUES (?, ?, ?, ?, ?)",
+        (guild_id, provider_name, model_name, user_id, int(time.time())),
+    )
+    con.commit()
+    con.close()
+    log.info(f"Set preferred model for guild {guild_id}: {provider_name}/{model_name}")
+
+
+def get_preferred_model(guild_id: int) -> Optional[dict]:
+    """Gets the preferred model override for a specific guild."""
+    con = sqlite3.connect(DB_NAME)
+    cur = con.cursor()
+    cur.execute(
+        "SELECT provider_name, model_name, set_by_user_id, set_at FROM preferred_models WHERE guild_id = ?",
+        (guild_id,),
+    )
+    result = cur.fetchone()
+    con.close()
+
+    if result:
+        return {
+            "provider_name": result[0],
+            "model_name": result[1],
+            "set_by_user_id": result[2],
+            "set_at": result[3],
+        }
+    return None
+
+
+def clear_preferred_model(guild_id: int) -> None:
+    """Clears the preferred model override for a specific guild."""
+    con = sqlite3.connect(DB_NAME)
+    cur = con.cursor()
+    cur.execute("DELETE FROM preferred_models WHERE guild_id = ?", (guild_id,))
+    con.commit()
+    con.close()
+    log.info(f"Cleared preferred model for guild {guild_id}")
