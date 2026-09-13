@@ -91,7 +91,7 @@ func TestChainWithoutPreference(t *testing.T) {
 	b := newPreferenceTestBot(t, preferenceTestChain())
 
 	chain := b.chain("guild-1", "user-1")
-	if got := providerNames(chain); got != "gemini,groq,cohere" {
+	if got := strings.Join(providerNames(chain), ","); got != "gemini,groq,cohere" {
 		t.Fatalf("chain = %s, want the configured order", got)
 	}
 	if chain[0].Default() != "gemini-2.5-flash" {
@@ -113,7 +113,7 @@ func TestChainAppliesStoredPreference(t *testing.T) {
 	}
 
 	chain := b.chain("guild-1", "user-1")
-	if got := providerNames(chain); got != "groq,gemini,cohere" {
+	if got := strings.Join(providerNames(chain), ","); got != "groq,gemini,cohere" {
 		t.Fatalf("chain = %s, want the chosen provider first", got)
 	}
 	if got := strings.Join(chain[0].Models, ","); got != "llama-3.1-8b-instant,llama-3.3-70b-versatile" {
@@ -138,13 +138,13 @@ func TestChainKeepsGuildAndDMPreferencesApart(t *testing.T) {
 		t.Fatalf("SetModelPreference: %v", err)
 	}
 
-	if got := providerNames(b.chain("guild-1", "user-1")); got != "gemini,groq,cohere" {
+	if got := strings.Join(providerNames(b.chain("guild-1", "user-1")), ","); got != "gemini,groq,cohere" {
 		t.Fatalf("guild chain = %s, want the configured order", got)
 	}
-	if got := providerNames(b.chain("", "user-1")); got != "cohere,gemini,groq" {
+	if got := strings.Join(providerNames(b.chain("", "user-1")), ","); got != "cohere,gemini,groq" {
 		t.Fatalf("dm chain = %s, want cohere first", got)
 	}
-	if got := providerNames(b.chain("", "user-2")); got != "gemini,groq,cohere" {
+	if got := strings.Join(providerNames(b.chain("", "user-2")), ","); got != "gemini,groq,cohere" {
 		t.Fatalf("another user's dm chain = %s, want the configured order", got)
 	}
 }
@@ -163,7 +163,7 @@ func TestChainIgnoresStalePreference(t *testing.T) {
 		if err := b.store.SetModelPreference(stale); err != nil {
 			t.Fatalf("SetModelPreference: %v", err)
 		}
-		if got := providerNames(b.chain("guild-1", "user-1")); got != "gemini,groq,cohere" {
+		if got := strings.Join(providerNames(b.chain("guild-1", "user-1")), ","); got != "gemini,groq,cohere" {
 			t.Fatalf("chain = %s, want the configured order for %+v", got, stale)
 		}
 	}
@@ -269,12 +269,4 @@ func TestModelAutocompleteIsCappedAtDiscordLimit(t *testing.T) {
 	if autocompleteMax != 25 {
 		t.Fatalf("autocompleteMax = %d, but Discord allows 25", autocompleteMax)
 	}
-}
-
-func providerNames(chain []config.Provider) string {
-	names := make([]string, 0, len(chain))
-	for _, p := range chain {
-		names = append(names, p.Name)
-	}
-	return strings.Join(names, ",")
 }

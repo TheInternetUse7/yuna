@@ -34,8 +34,18 @@ func (b *bifrostLogger) Debug(msg string, args ...any) {
 	if b == nil || b.log == nil {
 		return
 	}
+	// Bifrost emits this line after every successful request, where it
+	// restates what the reply attribution already records and drowns the
+	// lines about attempts and failures. The upstream call passes no
+	// arguments, so matching the raw message is exact.
+	if msg == noPrimaryErrorMessage {
+		return
+	}
 	b.log.Debugf("%s", formatArgs(msg, args))
 }
+
+// noPrimaryErrorMessage is Bifrost's success-path line in shouldTryFallbacks.
+const noPrimaryErrorMessage = "no primary error, we should not try fallbacks"
 
 func (b *bifrostLogger) Info(msg string, args ...any) {
 	if b == nil || b.log == nil {

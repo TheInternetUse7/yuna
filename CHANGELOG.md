@@ -11,12 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Discord image attachments are sent to models marked `image_input: true`;
   image-bearing turns use only that capability ladder.
+- `/provider_status` in direct messages shows the caller's effective chain,
+  without key or base URL details.
 - `-config` selects a YAML configuration path; the default is `config.yaml`.
 - `memory.summary_model` pins the model used for memory summaries, validated
   against the chosen summary provider's model list.
 
 ### Changed
 
+- Chat requests log their duration and the answering provider, image-bearing
+  turns log the narrowed provider chain, and Bifrost's redundant
+  "no primary error" success line is filtered out.
 - Configuration now uses strict `config.yaml` files instead of `.env` and
   environment variables. There is no backward-compatibility layer.
 - Providers and models are structured YAML entries. Providers have ordered model
@@ -30,6 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - The `.env` loader and `.env.example` template.
+
+### Fixed
+
+- The AI-channel commands refuse in direct messages before the permission
+  check, so the reply names the missing server context instead of an
+  Administrator permission no DM can grant.
 
 ## [0.1.0] - 2026-09-13
 

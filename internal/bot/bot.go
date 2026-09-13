@@ -106,7 +106,7 @@ func (b *Bot) Run(ctx context.Context) error {
 	}
 	b.log.Infof("yuna is online as %s (id %s); intents 0x%x",
 		b.session.State.User.Username, b.appID, int(b.session.Identify.Intents))
-	b.log.Infof("mention detection matches against id %s; any other id is a bug", b.appID)
+	b.log.Debugf("mention detection matches against id %s; any other id is a bug", b.appID)
 	if count, err := b.store.CountAIChannels(); err != nil {
 		b.log.Warnf("could not count ai channels: %v", err)
 	} else {

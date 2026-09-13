@@ -54,8 +54,9 @@ func (b *Bot) handleMessage(msg *discordgo.Message) {
 		return
 	}
 	if verdict.respond {
-		b.log.Debugf("message %s in channel %s from %s: %s (ai_channel=%t mentions=%d)",
-			msg.ID, msg.ChannelID, msg.Author.ID, verdict.reason, isAIChannel, len(msg.Mentions))
+		b.log.Debugf("message %s in channel %s from %s: %s (ai_channel=%t mentions=%d images=%d)",
+			msg.ID, msg.ChannelID, msg.Author.ID, verdict.reason, isAIChannel,
+			len(msg.Mentions), len(imageAttachments(msg)))
 	}
 	if verdict.store {
 		if err := b.storeMessage(msg, msg.Author.ID, store.RoleUser, msg.Content); err != nil {
@@ -98,6 +99,8 @@ func (b *Bot) generate(msg *discordgo.Message) {
 	images := imageAttachments(msg)
 	if len(images) > 0 {
 		chain = imageChain(chain)
+		b.log.Debugf("message %s carries %d image(s); provider chain narrowed to %v",
+			msg.ID, len(images), providerNames(chain))
 		if len(chain) == 0 {
 			b.log.Warnf("message %s in channel %s has images but no configured model supports image input",
 				msg.ID, msg.ChannelID)
@@ -254,6 +257,16 @@ func reorderModel(models []string, model string) []string {
 		}
 	}
 	return out
+}
+
+// providerNames lists a chain's provider names in order, for logs that explain
+// which ladder a turn actually uses.
+func providerNames(chain []config.Provider) []string {
+	names := make([]string, 0, len(chain))
+	for _, p := range chain {
+		names = append(names, p.Name)
+	}
+	return names
 }
 
 // preferenceScope resolves which stored preference applies to an interaction:

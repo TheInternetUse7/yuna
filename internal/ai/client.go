@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -100,6 +101,7 @@ func (c *Client) do(ctx context.Context, req request) (*Response, error) {
 	// The caller's context must stay the parent so cancellation propagates;
 	// Bifrost owns the per-provider deadline.
 	bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	started := time.Now()
 	resp, berr := c.bf.ChatCompletionRequest(bfCtx, &schemas.BifrostChatRequest{
 		Provider:  req.primary.Driver,
 		Model:     model,
@@ -111,6 +113,10 @@ func (c *Client) do(ctx context.Context, req request) (*Response, error) {
 		return nil, toChatError(berr)
 	}
 	out := parseResponse(resp)
+	// Bifrost's own lines say that a request ran but not how long it took,
+	// and the duration is what makes a slow provider visible before it fails.
+	c.log.Debugf("chat_completion provider=%s model=%s fallback=%t took=%s",
+		out.Provider, out.Model, out.IsFallback, time.Since(started).Round(time.Millisecond))
 	if out.IsFallback {
 		c.log.Warnf("provider %s did not answer; %s served the request instead (see the debug log for the failure)",
 			out.PrimaryProvider, out.Provider)

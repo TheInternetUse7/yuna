@@ -182,11 +182,13 @@ func isAdmin(e *discordgo.InteractionCreate) bool {
 }
 
 // requireAdmin refuses the command when the invoker is not an administrator.
+// The permission only exists in a server, so callers must reject direct
+// messages before reaching for this gate.
 func (b *Bot) requireAdmin(e *discordgo.InteractionCreate) bool {
 	if isAdmin(e) {
 		return true
 	}
-	_ = b.followup(e, "You need the Administrator permission to use this command.", true)
+	_ = b.followup(e, "You need the Administrator permission in this server to use this command.", true)
 	return false
 }
 
@@ -320,11 +322,11 @@ func (b *Bot) cmdSetAIChannel(e *discordgo.InteractionCreate, _ discordgo.Applic
 		b.log.Errorf("defer /%s: %v", cmdSetAIChannel, err)
 		return
 	}
-	if !b.requireAdmin(e) {
-		return
-	}
 	if e.GuildID == "" {
 		_ = b.followup(e, "This command only works in a server.", true)
+		return
+	}
+	if !b.requireAdmin(e) {
 		return
 	}
 	if err := b.store.AddAIChannel(e.ChannelID, e.GuildID); err != nil {
@@ -339,6 +341,10 @@ func (b *Bot) cmdSetAIChannel(e *discordgo.InteractionCreate, _ discordgo.Applic
 func (b *Bot) cmdRemoveAIChannel(e *discordgo.InteractionCreate, _ discordgo.ApplicationCommandInteractionData) {
 	if err := b.deferFor(e, true); err != nil {
 		b.log.Errorf("defer /%s: %v", cmdRemoveAIChannel, err)
+		return
+	}
+	if e.GuildID == "" {
+		_ = b.followup(e, "This command only works in a server.", true)
 		return
 	}
 	if !b.requireAdmin(e) {
@@ -358,11 +364,11 @@ func (b *Bot) cmdListAIChannels(e *discordgo.InteractionCreate, _ discordgo.Appl
 		b.log.Errorf("defer /%s: %v", cmdListAIChannels, err)
 		return
 	}
-	if !b.requireAdmin(e) {
-		return
-	}
 	if e.GuildID == "" {
 		_ = b.followup(e, "This command only works in a server.", true)
+		return
+	}
+	if !b.requireAdmin(e) {
 		return
 	}
 
@@ -387,12 +393,16 @@ func (b *Bot) cmdListAIChannels(e *discordgo.InteractionCreate, _ discordgo.Appl
 }
 
 // cmdProviderStatus reports the chain that would actually be used right now.
+// In a server that is an administrator's view of the operator's wiring; in a
+// direct message it is the caller's own chain, and operator details such as
+// key health and base URLs are omitted.
 func (b *Bot) cmdProviderStatus(e *discordgo.InteractionCreate, _ discordgo.ApplicationCommandInteractionData) {
 	if err := b.deferFor(e, true); err != nil {
 		b.log.Errorf("defer /%s: %v", cmdProviderStatus, err)
 		return
 	}
-	if !b.requireAdmin(e) {
+	inDM := e.GuildID == ""
+	if !inDM && !b.requireAdmin(e) {
 		return
 	}
 
@@ -413,11 +423,13 @@ func (b *Bot) cmdProviderStatus(e *discordgo.InteractionCreate, _ discordgo.Appl
 			}
 			fmt.Fprintf(&out, "    %s`%s`\n", marker, m)
 		}
-		fmt.Fprintf(&out, "    key: %s; tools: %t", describeKey(p), p.Tools)
-		if p.BaseURL != "" {
-			fmt.Fprintf(&out, "; base URL: `%s`", p.BaseURL)
+		if !inDM {
+			fmt.Fprintf(&out, "    key: %s; tools: %t", describeKey(p), p.Tools)
+			if p.BaseURL != "" {
+				fmt.Fprintf(&out, "; base URL: `%s`", p.BaseURL)
+			}
+			out.WriteString("\n")
 		}
-		out.WriteString("\n")
 	}
 
 	if pref := b.resolvePreference(e.GuildID, userID, true); pref != nil {
