@@ -20,11 +20,13 @@ type fakeSummarizer struct {
 	err        error
 	calls      int
 	transcript string
+	model      string
 }
 
 func (f *fakeSummarizer) Summarize(_ context.Context, _ config.Provider, _ []config.Provider,
-	transcript string) (*ai.SummaryResult, error) {
+	model, transcript string) (*ai.SummaryResult, error) {
 	f.calls++
+	f.model = model
 	f.transcript = transcript
 	return f.result, f.err
 }

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -23,16 +24,16 @@ func TestMigrationsApplyAndAreIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Open: %v", err)
 	}
-	var version string
-	if err := first.db.QueryRow(`SELECT version FROM schema_migrations`).Scan(&version); err != nil {
-		t.Fatalf("schema_migrations: %v", err)
-	}
-	if version != "00001" {
-		t.Fatalf("recorded version = %q, want 00001", version)
+	for _, version := range []string{"00001", "00002"} {
+		var got string
+		if err := first.db.QueryRow(
+			`SELECT version FROM schema_migrations WHERE version = ?`, version).Scan(&got); err != nil {
+			t.Fatalf("migration %s not recorded: %v", version, err)
+		}
 	}
 
 	// Every core table must exist, not just schema_migrations.
-	for _, table := range []string{"messages", "ai_channels", "preferred_models", "facts", "channel_summaries"} {
+	for _, table := range []string{"messages", "ai_channels", "model_preferences", "facts", "channel_summaries"} {
 		var name string
 		err := first.db.QueryRow(
 			`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&name)
@@ -55,8 +56,66 @@ func TestMigrationsApplyAndAreIdempotent(t *testing.T) {
 	if err := second.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("schema_migrations has %d rows after reopen, want 1", count)
+	if count != 2 {
+		t.Fatalf("schema_migrations has %d rows after reopen, want 2", count)
+	}
+}
+
+// Databases created by the previous release carry a preferred_models table.
+// Migration 00002 must move those rows into the guild scope and drop it.
+func TestMigrationCarriesPreferredModelsForward(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+
+	// Build the pre-00002 schema by hand, then record only 00001 as applied —
+	// the state a database upgraded from the previous release is in.
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open legacy: %v", err)
+	}
+	if _, err := db.Exec(migrationsTableSQL); err != nil {
+		t.Fatalf("create schema_migrations: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE preferred_models (
+		  guild_id       TEXT PRIMARY KEY,
+		  provider_name  TEXT NOT NULL,
+		  model_name     TEXT NOT NULL,
+		  set_by_user_id TEXT NOT NULL,
+		  set_at         INTEGER NOT NULL
+		);
+		INSERT INTO preferred_models VALUES ('guild-1','gemini','gemini-2.5-flash','admin-1',123);
+		INSERT INTO schema_migrations VALUES ('00001', 1);`); err != nil {
+		t.Fatalf("seed legacy schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy: %v", err)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open after upgrade: %v", err)
+	}
+	defer s.Close()
+
+	got, err := s.ModelPreference(PreferenceScopeGuild, "guild-1")
+	if err != nil {
+		t.Fatalf("ModelPreference: %v", err)
+	}
+	if got == nil {
+		t.Fatal("the guild's old preferred model did not survive the migration")
+	}
+	if got.ProviderName != "gemini" || got.ModelName != "gemini-2.5-flash" || got.SetByUserID != "admin-1" {
+		t.Fatalf("migrated preference = %+v", got)
+	}
+	if got.SetAt == 0 {
+		t.Fatal("migrated preference should carry a timestamp")
+	}
+
+	var name string
+	err = s.db.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'preferred_models'`).Scan(&name)
+	if err == nil {
+		t.Fatal("preferred_models should have been dropped by migration 00002")
 	}
 }
 
@@ -266,42 +325,95 @@ func TestAIChannelsListsOneGuild(t *testing.T) {
 	}
 }
 
-func TestPreferredModelCRUD(t *testing.T) {
+func TestModelPreferenceCRUD(t *testing.T) {
 	s := newTestStore(t)
 
-	got, err := s.PreferredModel("guild-1")
+	got, err := s.ModelPreference(PreferenceScopeGuild, "guild-1")
 	if err != nil {
-		t.Fatalf("PreferredModel: %v", err)
+		t.Fatalf("ModelPreference: %v", err)
 	}
 	if got != nil {
-		t.Fatalf("PreferredModel before set = %+v, want nil", got)
+		t.Fatalf("ModelPreference before set = %+v, want nil", got)
 	}
 
-	if err := s.SetPreferredModel("guild-1", "gemini", "gemini-2.5-flash", "user-1"); err != nil {
-		t.Fatalf("SetPreferredModel: %v", err)
+	if err := s.SetModelPreference(ModelPreference{
+		ScopeType: PreferenceScopeGuild, ScopeID: "guild-1",
+		ProviderName: "gemini", ModelName: "gemini-2.5-flash", SetByUserID: "user-1",
+	}); err != nil {
+		t.Fatalf("SetModelPreference: %v", err)
 	}
-	got, err = s.PreferredModel("guild-1")
+	got, err = s.ModelPreference(PreferenceScopeGuild, "guild-1")
 	if err != nil {
-		t.Fatalf("PreferredModel: %v", err)
+		t.Fatalf("ModelPreference: %v", err)
 	}
 	if got == nil || got.ProviderName != "gemini" || got.ModelName != "gemini-2.5-flash" {
-		t.Fatalf("PreferredModel = %+v, want gemini/gemini-2.5-flash", got)
+		t.Fatalf("ModelPreference = %+v, want gemini/gemini-2.5-flash", got)
+	}
+	if got.SetAt == 0 {
+		t.Fatal("SetAt should be stamped when the caller leaves it zero")
 	}
 
 	// Setting again replaces rather than duplicating.
-	if err := s.SetPreferredModel("guild-1", "groq", "llama-3.3-70b", "user-2"); err != nil {
-		t.Fatalf("SetPreferredModel (again): %v", err)
+	if err := s.SetModelPreference(ModelPreference{
+		ScopeType: PreferenceScopeGuild, ScopeID: "guild-1",
+		ProviderName: "groq", ModelName: "llama-3.3-70b", SetByUserID: "user-2",
+	}); err != nil {
+		t.Fatalf("SetModelPreference (again): %v", err)
 	}
-	got, _ = s.PreferredModel("guild-1")
+	got, _ = s.ModelPreference(PreferenceScopeGuild, "guild-1")
 	if got == nil || got.ProviderName != "groq" || got.SetByUserID != "user-2" {
-		t.Fatalf("PreferredModel after replace = %+v, want groq by user-2", got)
+		t.Fatalf("ModelPreference after replace = %+v, want groq by user-2", got)
 	}
 
-	if err := s.ClearPreferredModel("guild-1"); err != nil {
-		t.Fatalf("ClearPreferredModel: %v", err)
+	if err := s.ClearModelPreference(PreferenceScopeGuild, "guild-1"); err != nil {
+		t.Fatalf("ClearModelPreference: %v", err)
 	}
-	if got, _ = s.PreferredModel("guild-1"); got != nil {
-		t.Fatalf("PreferredModel after clear = %+v, want nil", got)
+	if got, _ = s.ModelPreference(PreferenceScopeGuild, "guild-1"); got != nil {
+		t.Fatalf("ModelPreference after clear = %+v, want nil", got)
+	}
+}
+
+// Guild IDs and user IDs are both Discord snowflakes, so the same string can
+// legitimately appear as a guild scope and as a user scope. The composite key
+// is what keeps them apart.
+func TestModelPreferenceScopesDoNotCollide(t *testing.T) {
+	s := newTestStore(t)
+	const shared = "809436401346936842"
+
+	if err := s.SetModelPreference(ModelPreference{
+		ScopeType: PreferenceScopeGuild, ScopeID: shared,
+		ProviderName: "gemini", ModelName: "gemini-2.5-flash", SetByUserID: "admin",
+	}); err != nil {
+		t.Fatalf("set guild preference: %v", err)
+	}
+	if err := s.SetModelPreference(ModelPreference{
+		ScopeType: PreferenceScopeDM, ScopeID: shared,
+		ProviderName: "groq", ModelName: "llama-3.3-70b", SetByUserID: shared,
+	}); err != nil {
+		t.Fatalf("set dm preference: %v", err)
+	}
+
+	guild, err := s.ModelPreference(PreferenceScopeGuild, shared)
+	if err != nil {
+		t.Fatalf("guild lookup: %v", err)
+	}
+	dm, err := s.ModelPreference(PreferenceScopeDM, shared)
+	if err != nil {
+		t.Fatalf("dm lookup: %v", err)
+	}
+	if guild == nil || guild.ProviderName != "gemini" {
+		t.Fatalf("guild preference = %+v, want gemini", guild)
+	}
+	if dm == nil || dm.ProviderName != "groq" {
+		t.Fatalf("dm preference = %+v, want groq", dm)
+	}
+
+	// Clearing one scope must leave the other alone.
+	if err := s.ClearModelPreference(PreferenceScopeGuild, shared); err != nil {
+		t.Fatalf("clear guild preference: %v", err)
+	}
+	if dm, _ := s.ModelPreference(PreferenceScopeDM, shared); dm == nil {
+		t.Fatal("clearing the guild scope removed the DM scope")
 	}
 }
 

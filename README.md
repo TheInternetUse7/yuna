@@ -29,7 +29,7 @@ that file; the essentials are:
 | `DISCORD_TOKEN`                | yes         | -             | Bot token                                                     |
 | `DISCORD_GUILD_ID`             | no          | global        | Register commands on one server (instant) instead of globally |
 | `YUNA_PROVIDERS`               | yes         | -             | Ordered chain: first is primary, the rest are fallbacks       |
-| `<NAME>_MODEL`                 | yes         | -             | Provider-native model ID                                      |
+| `<NAME>_MODELS`                | yes         | -             | Comma-separated model IDs, tried in order; first is default   |
 | `<NAME>_API_KEY`               | built-ins   | -             | API key for that provider                                     |
 | `<NAME>_BASE_URL`              | custom only | -             | OpenAI-compatible host; omit `/v1`, Bifrost adds the path     |
 | `<NAME>_TOOLS`                 | no          | catalog       | Whether the `remember` tool is offered to this provider       |
@@ -37,6 +37,7 @@ that file; the essentials are:
 | `YUNA_HISTORY_WINDOW`          | no          | `15`          | Messages sent as conversation context                         |
 | `YUNA_SUMMARY_EVERY`           | no          | `25`          | New messages before a summary refresh                         |
 | `YUNA_SUMMARY_PROVIDER`        | no          | last in chain | Provider used for summaries                                   |
+| `YUNA_SUMMARY_MODEL`           | no          | provider's first model | Model used for summaries                             |
 | `YUNA_FACTS_PER_USER_LIMIT`    | no          | `50`          | Stored facts per person per scope                             |
 | `YUNA_FACTS_INJECT_LIMIT`      | no          | `20`          | Facts injected into one prompt                                |
 | `YUNA_MAX_RETRIES`             | no          | `2`           | Retries per provider before failing over                      |
@@ -48,18 +49,30 @@ that file; the essentials are:
 
 ### Choosing providers
 
-`YUNA_PROVIDERS` is an ordered list. The first entry answers unless it fails, in
-which case Bifrost moves down the list:
+Each provider takes a comma-separated list of models, tried in the order given,
+and `YUNA_PROVIDERS` orders the providers themselves. A request starts at the
+first model of the first provider, then works through that provider's remaining
+models, then the next provider:
 
 ```
 YUNA_PROVIDERS=gemini,groq,openrouter
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODELS=gemini-2.5-flash,gemini-2.5-pro
 GEMINI_API_KEY=...
-GROQ_MODEL=llama-3.3-70b-versatile
+GROQ_MODELS=llama-3.3-70b-versatile,llama-3.1-8b-instant
 GROQ_API_KEY=...
-OPENROUTER_MODEL=anthropic/claude-3.5-sonnet
+OPENROUTER_MODELS=anthropic/claude-3.5-sonnet
 OPENROUTER_API_KEY=...
 ```
+
+That ladder is what keeps a rate-limited or retired model from taking the whole
+vendor out of rotation.
+
+### Choosing a model from Discord
+
+`/model set id:<model>` sets which model answers — for the whole server when an
+administrator runs it, and for the caller's own DMs otherwise. `/model reset`
+clears the choice. The `id` option autocompletes over the raw model IDs from the
+configured lists; nothing outside them can be selected.
 
 Built-in names: `gemini`, `openai`, `anthropic`, `groq`, `cerebras`,
 `openrouter`, `cohere`, `mistral`, `deepseek`, `xai`, `perplexity`, `nebius`,
@@ -72,9 +85,9 @@ covers Ollama, vLLM, LM Studio, llama.cpp, and gateways:
 
 ```
 YUNA_PROVIDERS=ollama,gemini
-OLLAMA_MODEL=llama3.1:8b
+OLLAMA_MODELS=llama3.1:8b
 OLLAMA_BASE_URL=http://host.docker.internal:11434
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODELS=gemini-2.5-flash
 GEMINI_API_KEY=...
 ```
 
@@ -97,11 +110,15 @@ can sit in the same chain without colliding.
 | `/remove_ai_channel`                                | admin    | ephemeral | Stop replying to every message              |
 | `/list_ai_channels`                                 | admin    | ephemeral | List this server's AI channels              |
 | `/provider_status`                                  | admin    | ephemeral | Show the effective chain and settings       |
-| `/set_preferred_model provider:<name> [model:<id>]` | admin    | ephemeral | Pin a provider to the front for this server |
-| `/clear_preferred_model`                            | admin    | ephemeral | Return to the configured order              |
+| `/model set id:<model>`                             | admin in a server, everyone in DMs | ephemeral | Choose which model answers |
+| `/model reset`                                      | admin in a server, everyone in DMs | ephemeral | Return to the configured order |
 
 `/memory` and `/forget` always act on the person who ran them, in the scope they
 ran them in. Those replies are ephemeral.
+
+`/model` needs Administrator to change a server's model, but anyone can set the
+model for their own DMs. The `id` option autocompletes over the configured
+models, shown as `provider · model-id`.
 
 ## Memory and privacy
 

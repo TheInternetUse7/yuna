@@ -57,8 +57,8 @@ func run(checkOnly bool) error {
 		return err
 	}
 	defer func() { _ = log.Close() }()
-	log.Infof("starting yuna %s; provider chain: %v (summary provider: %s)",
-		versionString(), cfg.ProviderNames(), cfg.SummaryProvider)
+	log.Infof("starting yuna %s; provider chain: %v (summary: %s/%s)",
+		versionString(), cfg.ProviderNames(), cfg.SummaryProvider, cfg.SummaryModel)
 
 	st, err := store.Open(cfg.DBPath)
 	if err != nil {
@@ -82,8 +82,8 @@ func run(checkOnly bool) error {
 	defer client.Close()
 
 	if checkOnly {
-		log.Infof("check passed: providers %v (summary: %s), database %s, memory enabled=%t",
-			cfg.ProviderNames(), cfg.SummaryProvider, cfg.DBPath, cfg.MemoryEnabled)
+		log.Infof("check passed: providers %v (summary: %s/%s), database %s, memory enabled=%t",
+			cfg.ProviderNames(), cfg.SummaryProvider, cfg.SummaryModel, cfg.DBPath, cfg.MemoryEnabled)
 		return nil
 	}
 
@@ -95,6 +95,7 @@ func run(checkOnly bool) error {
 		HistoryWindow:   cfg.HistoryWindow,
 		SummaryEvery:    cfg.SummaryEvery,
 		SummaryProvider: summaryProvider,
+		SummaryModel:    cfg.SummaryModel,
 		Chain:           cfg.Providers,
 		FactsPerUser:    cfg.FactsPerUserLimit,
 		FactsInject:     cfg.FactsInjectLimit,

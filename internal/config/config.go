@@ -25,9 +25,13 @@ type Config struct {
 	// Providers is the ordered chain: Providers[0] is the primary.
 	Providers []Provider
 
-	HistoryWindow     int
-	SummaryEvery      int
-	SummaryProvider   string
+	HistoryWindow   int
+	SummaryEvery    int
+	SummaryProvider string
+	// SummaryModel is the model the summariser uses, always one of the summary
+	// provider's configured models. It exists so memory can run on something
+	// cheaper than whatever the chat chain is using.
+	SummaryModel      string
 	FactsPerUserLimit int
 	FactsInjectLimit  int
 	MemoryEnabled     bool
@@ -96,6 +100,21 @@ func Load() (*Config, error) {
 				problems = append(problems, fmt.Sprintf(
 					"YUNA_SUMMARY_PROVIDER %q is not present in YUNA_PROVIDERS", cfg.SummaryProvider))
 			}
+		}
+	}
+
+	// The summariser's model must belong to its provider: a typo here fails at
+	// the first summary refresh, long after boot, so catch it up front.
+	cfg.SummaryModel = strings.TrimSpace(os.Getenv("YUNA_SUMMARY_MODEL"))
+	if provider, ok := cfg.Provider(cfg.SummaryProvider); ok {
+		switch {
+		case cfg.SummaryModel == "":
+			cfg.SummaryModel = provider.Default()
+		case !provider.HasModel(cfg.SummaryModel):
+			problems = append(problems, fmt.Sprintf(
+				"YUNA_SUMMARY_MODEL %q is not one of %s_MODELS for provider %q (%s)",
+				cfg.SummaryModel, EnvPrefix(provider.Name), provider.Name,
+				strings.Join(provider.Models, ", ")))
 		}
 	}
 

@@ -93,7 +93,7 @@ func (b *Bot) storeMessage(msg *discordgo.Message, userID, role, content string)
 func (b *Bot) generate(msg *discordgo.Message) {
 	b.log.Debugf("generating reply for message %s in channel %s", msg.ID, msg.ChannelID)
 	turn := turnFromMessage(msg)
-	chain := b.chain(msg.GuildID)
+	chain := b.chain(msg.GuildID, msg.Author.ID)
 
 	ctx, cancel := context.WithTimeout(context.Background(), generateTimeout)
 	defer cancel()
@@ -171,51 +171,115 @@ func toolError(message string) string {
 	return string(payload)
 }
 
-// chain returns the configured providers in order, except that a guild's
-// preferred-model override moves that provider to the front.
-func (b *Bot) chain(guildID string) []config.Provider {
+// chain returns the configured providers in order, with a stored model
+// preference applied: the chosen provider moves to the front and answers with
+// the chosen model, which becomes Providers[0] for the turn. Everything else
+// stays in configured order as fallbacks.
+//
+// A guild preference wins when there is one; otherwise a DM preference keyed by
+// the user applies. The user argument is ignored inside a guild, so the same
+// call shape works from both paths.
+func (b *Bot) chain(guildID, userID string) []config.Provider {
 	configured := b.cfg.Providers
-	if guildID == "" {
-		return configured
-	}
 
-	override, err := b.store.PreferredModel(guildID)
-	if err != nil {
-		b.log.Warnf("preferred model lookup for guild %s: %v", guildID, err)
-		return configured
-	}
-	if override == nil {
+	pref := b.resolvePreference(guildID, userID, false)
+	if pref == nil {
 		return configured
 	}
 
 	index := -1
 	for i, p := range configured {
-		if p.Name == override.ProviderName {
+		if p.Name == pref.ProviderName {
 			index = i
 			break
 		}
 	}
 	if index < 0 {
-		b.log.Warnf("guild %s prefers provider %q, which is no longer configured; ignoring the override",
-			guildID, override.ProviderName)
-		return configured
-	}
-	if index == 0 && override.ModelName == configured[0].Model {
+		b.log.Warnf("model preference names provider %q, which is no longer configured; ignoring it",
+			pref.ProviderName)
 		return configured
 	}
 
-	preferred := configured[index]
-	if override.ModelName != "" {
-		preferred.Model = override.ModelName
+	chosen := configured[index]
+	if !chosen.HasModel(pref.ModelName) {
+		// The operator renamed or dropped the model. Falling back to the chain
+		// is quieter than failing every turn from a stale preference.
+		b.log.Warnf("model preference names model %q, which provider %q no longer lists; ignoring it",
+			pref.ModelName, pref.ProviderName)
+		return configured
 	}
+	chosen.Models = reorderModel(chosen.Models, pref.ModelName)
+
+	if index == 0 {
+		// Already the head of the chain: only the model order can change.
+		reordered := make([]config.Provider, len(configured))
+		copy(reordered, configured)
+		reordered[0] = chosen
+		return reordered
+	}
+
 	reordered := make([]config.Provider, 0, len(configured))
-	reordered = append(reordered, preferred)
+	reordered = append(reordered, chosen)
 	for i, p := range configured {
 		if i != index {
 			reordered = append(reordered, p)
 		}
 	}
 	return reordered
+}
+
+// reorderModel moves model to the front of a provider's model list, keeping the
+// rest in their configured order.
+func reorderModel(models []string, model string) []string {
+	out := make([]string, 0, len(models))
+	out = append(out, model)
+	for _, m := range models {
+		if m != model {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// preferenceScope resolves which stored preference applies to an interaction:
+// the guild for an administrator acting in a server, otherwise the user's own
+// DM scope. The boolean is false when the invoker may not change the guild's
+// model, which is the only refusal case.
+func (b *Bot) preferenceScope(e *discordgo.InteractionCreate) (string, string, bool) {
+	if e.GuildID != "" {
+		if !isAdmin(e) {
+			return "", "", false
+		}
+		return store.PreferenceScopeGuild, e.GuildID, true
+	}
+	userID := interactionUserID(e)
+	if userID == "" {
+		return "", "", false
+	}
+	return store.PreferenceScopeDM, userID, true
+}
+
+// resolvePreference reads the stored model choice that applies to a turn:
+// the guild's, or the speaker's DM choice. A lookup failure is reported and
+// treated as "no preference" so a database hiccup cannot block a reply.
+func (b *Bot) resolvePreference(guildID, userID string, warn bool) *store.ModelPreference {
+	var scopeType, scopeID string
+	if guildID != "" {
+		scopeType, scopeID = store.PreferenceScopeGuild, guildID
+	} else if userID != "" {
+		scopeType, scopeID = store.PreferenceScopeDM, userID
+	} else {
+		return nil
+	}
+
+	pref, err := b.store.ModelPreference(scopeType, scopeID)
+	if err != nil {
+		if warn {
+			b.log.Warnf("model preference lookup for %s %s: %v", scopeType, scopeID, err)
+		}
+		return nil
+	}
+	return pref
 }
 
 func (b *Bot) sendFailure(ref *discordgo.Message) {
@@ -263,10 +327,25 @@ func (b *Bot) onInteraction(_ *discordgo.Session, e *discordgo.InteractionCreate
 	if e == nil || e.Interaction == nil {
 		return
 	}
-	if e.Type != discordgo.InteractionApplicationCommand {
+	switch e.Type {
+	case discordgo.InteractionApplicationCommand:
+		go b.handleInteraction(e)
+	case discordgo.InteractionApplicationCommandAutocomplete:
+		go b.handleAutocomplete(e)
+	default:
 		return
 	}
-	go b.handleInteraction(e)
+}
+
+// handleAutocomplete answers the typeahead for a command option. It runs
+// without a prior defer: Discord expects the choices as the interaction's
+// first and only response.
+func (b *Bot) handleAutocomplete(e *discordgo.InteractionCreate) {
+	data := e.ApplicationCommandData()
+	if data.Name != cmdModel {
+		return
+	}
+	b.cmdModelAutocomplete(e, data)
 }
 
 // interactionHandler is the signature every slash command shares. Returning it
@@ -284,10 +363,8 @@ func (b *Bot) handlerFor(name string) func(*discordgo.InteractionCreate, discord
 		return b.cmdListAIChannels
 	case cmdProviderStatus:
 		return b.cmdProviderStatus
-	case cmdSetPreferredModel:
-		return b.cmdSetPreferredModel
-	case cmdClearPreferredModel:
-		return b.cmdClearPreferredModel
+	case cmdModel:
+		return b.cmdModel
 	case cmdRemember:
 		return b.cmdRemember
 	case cmdMemory:

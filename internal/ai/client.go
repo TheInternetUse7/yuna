@@ -76,7 +76,7 @@ func (c *Client) Close() { c.bf.Shutdown() }
 // request is the internal shape shared by chat and summarisation calls.
 type request struct {
 	primary     config.Provider
-	model       string // defaults to primary.Model
+	model       string // defaults to primary's first model
 	fallbacks   []schemas.Fallback
 	messages    []schemas.ChatMessage
 	tools       []schemas.ChatTool
@@ -86,7 +86,7 @@ type request struct {
 func (c *Client) do(ctx context.Context, req request) (*Response, error) {
 	model := req.model
 	if model == "" {
-		model = req.primary.Model
+		model = req.primary.Default()
 	}
 
 	params := &schemas.ChatParameters{}
@@ -123,7 +123,7 @@ func (c *Client) Chat(ctx context.Context, primary config.Provider, chain []conf
 	msgs []schemas.ChatMessage, tools []schemas.ChatTool) (*Response, error) {
 	return c.do(ctx, request{
 		primary:   primary,
-		fallbacks: fallbacksFor(chain, primary),
+		fallbacks: fallbacksFor(chain, primary, primary.Default()),
 		messages:  msgs,
 		tools:     tools,
 	})
@@ -199,14 +199,41 @@ func (c *Client) continueWithTools(ctx context.Context, chain []config.Provider,
 	return final, nil
 }
 
-// fallbacksFor turns the chain into Bifrost fallbacks, skipping the primary.
-func fallbacksFor(chain []config.Provider, primary config.Provider) []schemas.Fallback {
+// fallbacksFor builds the ladder Bifrost walks after an attempt on
+// primary/model fails. It tries the rest of the primary provider's models
+// first, so a rate-limited or retired model rolls to a sibling model at the
+// same vendor before the request leaves for a different one, then appends the
+// other configured providers in their configured order.
+//
+// The attempted (driver, model) pair is skipped, and repeats are dropped: a
+// model listed under two entries would otherwise burn a fallback slot and add
+// a round trip to every failure.
+func fallbacksFor(chain []config.Provider, primary config.Provider, model string) []schemas.Fallback {
 	out := make([]schemas.Fallback, 0, len(chain))
+	seen := make(map[schemas.Fallback]bool)
+	add := func(p config.Provider, m string) {
+		if m == "" {
+			return
+		}
+		f := schemas.Fallback{Provider: p.Driver, Model: m}
+		if f.Provider == primary.Driver && f.Model == model {
+			return
+		}
+		if seen[f] {
+			return
+		}
+		seen[f] = true
+		out = append(out, f)
+	}
+
+	for _, m := range primary.Models {
+		add(primary, m)
+	}
 	for _, p := range chain {
 		if p.Name == primary.Name {
 			continue
 		}
-		out = append(out, schemas.Fallback{Provider: p.Driver, Model: p.Model})
+		add(p, p.Default())
 	}
 	return out
 }

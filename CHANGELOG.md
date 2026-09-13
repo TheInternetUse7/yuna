@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `YUNA_SUMMARY_MODEL` pins the model used for memory summaries, validated
+  against the chosen summary provider's model list.
+
+### Changed
+
+- Providers take a comma-separated `<NAME>_MODELS` list instead of a single
+  `<NAME>_MODEL`. The first entry is the default and the rest are fallbacks for
+  that provider, tried before the chain moves on.
+- `/model` replaces `/set_preferred_model` and `/clear_preferred_model`. It has
+  `set id:<model>` and `reset` subcommands, and `id` autocompletes over every
+  configured model.
+- A model choice is now stored per server for administrators and per user for
+  DMs, rather than per server only.
+
 ## [0.1.0] - 2026-09-13
 
 First release of the Go rewrite.

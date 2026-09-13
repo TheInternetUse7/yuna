@@ -16,16 +16,17 @@ import (
 
 // Slash command names, used both to build the command set and to dispatch it.
 const (
-	cmdChat                = "chat"
-	cmdSetAIChannel        = "set_ai_channel"
-	cmdRemoveAIChannel     = "remove_ai_channel"
-	cmdListAIChannels      = "list_ai_channels"
-	cmdProviderStatus      = "provider_status"
-	cmdSetPreferredModel   = "set_preferred_model"
-	cmdClearPreferredModel = "clear_preferred_model"
-	cmdRemember            = "remember"
-	cmdMemory              = "memory"
-	cmdForget              = "forget"
+	cmdChat            = "chat"
+	cmdSetAIChannel    = "set_ai_channel"
+	cmdRemoveAIChannel = "remove_ai_channel"
+	cmdListAIChannels  = "list_ai_channels"
+	cmdProviderStatus  = "provider_status"
+	cmdModel           = "model"
+	cmdModelSet        = "set"
+	cmdModelReset      = "reset"
+	cmdRemember        = "remember"
+	cmdMemory          = "memory"
+	cmdForget          = "forget"
 )
 
 // Commands is the complete slash command set, republished on every boot.
@@ -62,28 +63,34 @@ func Commands() []*discordgo.ApplicationCommand {
 			DefaultMemberPermissions: adminOnly(),
 		},
 		{
-			Name:                     cmdSetPreferredModel,
-			Description:              "Pin a provider to the front of the chain for this server",
-			DefaultMemberPermissions: adminOnly(),
+			// No admin gate: in a DM the choice is personal, and in a guild the
+			// permission check runs inside the handler so the two cases can
+			// differ. Discord only lets one permission set be published.
+			Name:        cmdModel,
+			Description: "Choose which model answers here",
 			Options: []*discordgo.ApplicationCommandOption{
 				{
-					Type:        discordgo.ApplicationCommandOptionString,
-					Name:        "provider",
-					Description: "Provider name, as configured in YUNA_PROVIDERS",
-					Required:    true,
+					// Options are either all subcommands or all plain options;
+					// mixing the two is rejected with code 50035.
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        cmdModelSet,
+					Description: "Set the model for this server or your DMs",
+					Options: []*discordgo.ApplicationCommandOption{
+						{
+							Type:         discordgo.ApplicationCommandOptionString,
+							Name:         "id",
+							Description:  "Model to use; type to search the configured models",
+							Required:     true,
+							Autocomplete: true,
+						},
+					},
 				},
 				{
-					Type:        discordgo.ApplicationCommandOptionString,
-					Name:        "model",
-					Description: "Model ID to use instead of the configured one",
-					Required:    false,
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        cmdModelReset,
+					Description: "Go back to the configured model order",
 				},
 			},
-		},
-		{
-			Name:                     cmdClearPreferredModel,
-			Description:              "Return this server to the configured provider order",
-			DefaultMemberPermissions: adminOnly(),
 		},
 		{
 			Name:        cmdRemember,
@@ -184,8 +191,12 @@ func (b *Bot) requireAdmin(e *discordgo.InteractionCreate) bool {
 }
 
 // optionValue returns the named option's raw value, or nil when it is absent.
-func optionValue(data discordgo.ApplicationCommandInteractionData, name string) any {
-	for _, opt := range data.Options {
+//
+// It takes an option slice rather than the whole interaction so it works at
+// either level: a command's own options, or the options belonging to a
+// subcommand. Callers with a subcommand pass subcommandOptions(data).
+func optionValue(options []*discordgo.ApplicationCommandInteractionDataOption, name string) any {
+	for _, opt := range options {
 		if opt != nil && opt.Name == name {
 			return opt.Value
 		}
@@ -194,14 +205,14 @@ func optionValue(data discordgo.ApplicationCommandInteractionData, name string) 
 }
 
 // optionString reads a string option, returning "" when it is absent.
-func optionString(data discordgo.ApplicationCommandInteractionData, name string) string {
-	value, _ := optionValue(data, name).(string)
+func optionString(options []*discordgo.ApplicationCommandInteractionDataOption, name string) string {
+	value, _ := optionValue(options, name).(string)
 	return value
 }
 
 // optionBool reads a boolean option, returning false when it is absent.
-func optionBool(data discordgo.ApplicationCommandInteractionData, name string) bool {
-	value, _ := optionValue(data, name).(bool)
+func optionBool(options []*discordgo.ApplicationCommandInteractionDataOption, name string) bool {
+	value, _ := optionValue(options, name).(bool)
 	return value
 }
 
@@ -249,14 +260,14 @@ func (b *Bot) cmdChat(e *discordgo.InteractionCreate, data discordgo.Application
 		return
 	}
 
-	prompt := strings.TrimSpace(optionString(data, "prompt"))
+	prompt := strings.TrimSpace(optionString(data.Options, "prompt"))
 	if prompt == "" {
 		_ = b.followup(e, "Please include a prompt.", false)
 		return
 	}
 
 	turn := turnFromInteraction(e)
-	chain := b.chain(turn.GuildID)
+	chain := b.chain(turn.GuildID, turn.UserID)
 
 	b.runExclusive(e.ChannelID, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), generateTimeout)
@@ -385,7 +396,8 @@ func (b *Bot) cmdProviderStatus(e *discordgo.InteractionCreate, _ discordgo.Appl
 		return
 	}
 
-	chain := b.chain(e.GuildID)
+	userID := interactionUserID(e)
+	chain := b.chain(e.GuildID, userID)
 	var out strings.Builder
 	out.WriteString("**Effective provider chain**\n")
 	for i, p := range chain {
@@ -393,7 +405,14 @@ func (b *Bot) cmdProviderStatus(e *discordgo.InteractionCreate, _ discordgo.Appl
 		if i > 0 {
 			role = fmt.Sprintf("fallback %d", i)
 		}
-		fmt.Fprintf(&out, "%d. **%s** - `%s` (%s)\n", i+1, p.Name, p.Model, role)
+		fmt.Fprintf(&out, "%d. **%s** (%s)\n", i+1, p.Name, role)
+		for j, m := range p.Models {
+			marker := "  "
+			if j == 0 {
+				marker = "> "
+			}
+			fmt.Fprintf(&out, "    %s`%s`\n", marker, m)
+		}
 		fmt.Fprintf(&out, "    key: %s; tools: %t", describeKey(p), p.Tools)
 		if p.BaseURL != "" {
 			fmt.Fprintf(&out, "; base URL: `%s`", p.BaseURL)
@@ -401,16 +420,28 @@ func (b *Bot) cmdProviderStatus(e *discordgo.InteractionCreate, _ discordgo.Appl
 		out.WriteString("\n")
 	}
 
-	if override, err := b.store.PreferredModel(e.GuildID); err == nil && override != nil {
-		fmt.Fprintf(&out, "\n**Preferred model:** %s/`%s` (set by <@%s>)\n",
-			override.ProviderName, override.ModelName, override.SetByUserID)
+	if pref := b.resolvePreference(e.GuildID, userID, true); pref != nil {
+		fmt.Fprintf(&out, "\n**Selected model:** %s/`%s` (%s, set by <@%s>)\n",
+			pref.ProviderName, pref.ModelName, describePreferenceScope(pref.ScopeType), pref.SetByUserID)
 	} else {
-		out.WriteString("\n**Preferred model:** none\n")
+		out.WriteString("\n**Selected model:** none, using the configured order\n")
 	}
 	fmt.Fprintf(&out, "**Memory:** %t; history window: %d; summary every: %d messages",
 		b.cfg.MemoryEnabled, b.cfg.HistoryWindow, b.cfg.SummaryEvery)
+	if b.cfg.SummaryModel != "" {
+		fmt.Fprintf(&out, "; summarised by `%s` on %s",
+			b.cfg.SummaryModel, b.cfg.SummaryProvider)
+	}
 
 	b.followupChunks(e, out.String(), true)
+}
+
+// describePreferenceScope renders a stored preference's scope for humans.
+func describePreferenceScope(scopeType string) string {
+	if scopeType == store.PreferenceScopeDM {
+		return "this user's DMs"
+	}
+	return "this server"
 }
 
 func describeKey(p config.Provider) string {
@@ -424,65 +455,225 @@ func describeKey(p config.Provider) string {
 	}
 }
 
-// cmdSetPreferredModel pins one provider to the front of the chain for a guild.
-func (b *Bot) cmdSetPreferredModel(e *discordgo.InteractionCreate, data discordgo.ApplicationCommandInteractionData) {
+// cmdModel chooses which configured model answers in this context: for a whole
+// server when the invoker is an administrator, and for the caller's own DMs
+// otherwise. It has no plain options -- Discord forbids mixing subcommands with
+// other option types -- so every invocation arrives as set or reset.
+func (b *Bot) cmdModel(e *discordgo.InteractionCreate, data discordgo.ApplicationCommandInteractionData) {
 	if err := b.deferFor(e, true); err != nil {
-		b.log.Errorf("defer /%s: %v", cmdSetPreferredModel, err)
-		return
-	}
-	if !b.requireAdmin(e) {
-		return
-	}
-	if e.GuildID == "" {
-		_ = b.followup(e, "This command only works in a server.", true)
+		b.log.Errorf("defer /%s: %v", cmdModel, err)
 		return
 	}
 
-	name := strings.ToLower(strings.TrimSpace(optionString(data, "provider")))
-	if name == "" {
-		_ = b.followup(e, "Name a provider, for example: gemini", true)
+	subcommand := optionSubcommand(data)
+	if subcommand != cmdModelSet && subcommand != cmdModelReset {
+		_ = b.followup(e, fmt.Sprintf("Use `/%s %s id:<model>` to choose a model, or `/%s %s` to clear it.",
+			cmdModel, cmdModelSet, cmdModel, cmdModelReset), true)
 		return
 	}
-	provider, ok := b.cfg.Provider(name)
+
+	scopeType, scopeID, ok := b.preferenceScope(e)
 	if !ok {
-		_ = b.followup(e, fmt.Sprintf("Unknown provider %q. Configured providers: %s.",
-			name, strings.Join(b.cfg.ProviderNames(), ", ")), true)
+		_ = b.followup(e, "You need the Administrator permission to change the model for a server. "+"In a direct message you can set your own model.", true)
 		return
 	}
 
-	model := strings.TrimSpace(optionString(data, "model"))
-	if model == "" {
-		model = provider.Model
+	if subcommand == cmdModelReset {
+		if err := b.store.ClearModelPreference(scopeType, scopeID); err != nil {
+			b.log.Errorf("clear model preference for %s %s: %v", scopeType, scopeID, err)
+			_ = b.followup(e, "I could not save that. Check the logs.", true)
+			return
+		}
+		_ = b.followup(e, "Cleared. Back to the configured model order.", true)
+		return
 	}
-	if err := b.store.SetPreferredModel(e.GuildID, name, model, interactionUserID(e)); err != nil {
-		b.log.Errorf("set preferred model for %s: %v", e.GuildID, err)
+
+	// set's options live inside the subcommand, one level below the top.
+	options := subcommandOptions(data)
+	id := strings.TrimSpace(optionString(options, "id"))
+	if id == "" {
+		_ = b.followup(e, fmt.Sprintf(
+			"Name a model. Type in the `id` option to search, or use `/%s %s` to clear the choice.",
+			cmdModel, cmdModelReset), true)
+		return
+	}
+
+	chain := b.chain(e.GuildID, interactionUserID(e))
+	provider, found, ambiguous := findModel(chain, id)
+	if !found {
+		_ = b.followup(e, fmt.Sprintf("Unknown model %q. It is not in any configured provider's model list.", id), true)
+		return
+	}
+	if ambiguous {
+		// The same model ID under two providers has different credentials and
+		// different fallback ladders behind it, so say which one was taken
+		// rather than picking silently.
+		b.log.Warnf("model %q is configured by more than one provider; using %q", id, provider.Name)
+	}
+
+	if err := b.store.SetModelPreference(store.ModelPreference{
+		ScopeType:    scopeType,
+		ScopeID:      scopeID,
+		ProviderName: provider.Name,
+		ModelName:    id,
+		SetByUserID:  interactionUserID(e),
+	}); err != nil {
+		b.log.Errorf("set model preference for %s %s: %v", scopeType, scopeID, err)
 		_ = b.followup(e, "I could not save that. Check the logs.", true)
 		return
+	}
+
+	where := "for your direct messages"
+	if scopeType == store.PreferenceScopeGuild {
+		where = "for this server"
 	}
 	_ = b.followup(e, fmt.Sprintf(
-		"Pinned **%s** (`%s`) to the front of the chain for this server. The others remain as fallbacks. "+
-			"Use /%s to undo.", name, model, cmdClearPreferredModel), true)
+		"Using **%s** (`%s`) %s. That provider's other models answer first if this one fails, "+
+			"then the rest of the chain. `/%s %s` undoes it.",
+		provider.Name, id, where, cmdModel, cmdModelReset), true)
 }
 
-// cmdClearPreferredModel returns a guild to the configured provider order.
-func (b *Bot) cmdClearPreferredModel(e *discordgo.InteractionCreate, _ discordgo.ApplicationCommandInteractionData) {
-	if err := b.deferFor(e, true); err != nil {
-		b.log.Errorf("defer /%s: %v", cmdClearPreferredModel, err)
-		return
+// cmdModelAutocomplete answers the /model typeahead. Candidacy comes from the
+// configured model lists only, so the response never depends on a provider
+// being reachable inside Discord's three-second window.
+func (b *Bot) cmdModelAutocomplete(e *discordgo.InteractionCreate, data discordgo.ApplicationCommandInteractionData) {
+	typed := ""
+	if opt := focusedOption(data); opt != nil {
+		typed = opt.StringValue()
 	}
-	if !b.requireAdmin(e) {
-		return
+
+	candidates := autocompleteCandidates(b.cfg.Providers)
+	choices := matchChoices(candidates, typed)
+	if len(choices) == 0 {
+		choices = []*discordgo.ApplicationCommandOptionChoice{
+			{Name: "no configured model matches", Value: typed},
+		}
 	}
-	if e.GuildID == "" {
-		_ = b.followup(e, "This command only works in a server.", true)
-		return
+
+	err := b.session.InteractionRespond(e.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionApplicationCommandAutocompleteResult,
+		Data: &discordgo.InteractionResponseData{Choices: choices},
+	})
+	if err != nil {
+		b.log.Errorf("/%s autocomplete: %v", cmdModel, err)
 	}
-	if err := b.store.ClearPreferredModel(e.GuildID); err != nil {
-		b.log.Errorf("clear preferred model for %s: %v", e.GuildID, err)
-		_ = b.followup(e, "I could not save that. Check the logs.", true)
-		return
+}
+
+// autocompleteMax is Discord's cap on choices returned for one autocomplete
+// interaction; sending more is rejected outright.
+const autocompleteMax = 25
+
+// matchChoices filters candidate models by what has been typed so far, matching
+// case-insensitively on the model ID or the provider name, and caps the result
+// at Discord's limit. The choice value is the raw model ID, not the label:
+// Discord echoes the value back, and the handler resolves it with findModel.
+func matchChoices(candidates []modelCandidate, typed string) []*discordgo.ApplicationCommandOptionChoice {
+	needle := strings.ToLower(strings.TrimSpace(typed))
+	choices := make([]*discordgo.ApplicationCommandOptionChoice, 0, autocompleteMax)
+	for _, c := range candidates {
+		if needle != "" && !strings.Contains(strings.ToLower(c.label()), needle) {
+			continue
+		}
+		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{Name: c.label(), Value: c.Model})
+		if len(choices) == autocompleteMax {
+			break
+		}
 	}
-	_ = b.followup(e, "Cleared. This server is back to the configured provider order.", true)
+	return choices
+}
+
+// modelCandidate is one picker entry. The label names the provider because a
+// raw model ID does not say which credentials and fallback ladder sit behind
+// it; the value stays the raw ID so a picked entry and a hand-typed one resolve
+// the same way.
+type modelCandidate struct {
+	Provider string
+	Model    string
+}
+
+func (c modelCandidate) label() string { return c.Provider + " · " + c.Model }
+
+// autocompleteCandidates lists every configured model, in chain order.
+func autocompleteCandidates(providers []config.Provider) []modelCandidate {
+	out := make([]modelCandidate, 0, len(providers))
+	for _, p := range providers {
+		for _, m := range p.Models {
+			out = append(out, modelCandidate{Provider: p.Name, Model: m})
+		}
+	}
+	return out
+}
+
+// findModel resolves a model ID against the chain, preferring the provider that
+// would answer right now so a bare ID keeps naming the same vendor as long as
+// that provider still lists it. ambiguous reports that another provider also
+// offers the ID.
+func findModel(chain []config.Provider, id string) (config.Provider, bool, bool) {
+	var found config.Provider
+	var ok bool
+	ambiguous := false
+	for _, p := range chain {
+		if !p.HasModel(id) {
+			continue
+		}
+		if !ok {
+			found, ok = p, true
+			continue
+		}
+		ambiguous = true
+	}
+	return found, ok, ambiguous
+}
+
+// optionSubcommand returns the name of the invoked subcommand, or "" when the
+// interaction used a top-level option instead.
+func optionSubcommand(data discordgo.ApplicationCommandInteractionData) string {
+	for _, opt := range data.Options {
+		if opt != nil && opt.Type == discordgo.ApplicationCommandOptionSubCommand {
+			return opt.Name
+		}
+	}
+	return ""
+}
+
+// subcommandOptions returns the options belonging to the invoked subcommand,
+// one level below the command's own options. It returns nil when the
+// interaction carried plain options instead.
+func subcommandOptions(data discordgo.ApplicationCommandInteractionData) []*discordgo.ApplicationCommandInteractionDataOption {
+	for _, opt := range data.Options {
+		if opt != nil && opt.Type == discordgo.ApplicationCommandOptionSubCommand {
+			return opt.Options
+		}
+	}
+	return nil
+}
+
+// focusedOption returns the option Discord marked as focused in an
+// autocomplete interaction, or nil when none is flagged. The flag sits on the
+// option being typed in, which for a subcommand is nested one level below the
+// top, so the search recurses.
+func focusedOption(data discordgo.ApplicationCommandInteractionData) *discordgo.ApplicationCommandInteractionDataOption {
+	for _, opt := range data.Options {
+		if found := focusedIn(opt); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+func focusedIn(opt *discordgo.ApplicationCommandInteractionDataOption) *discordgo.ApplicationCommandInteractionDataOption {
+	if opt == nil {
+		return nil
+	}
+	if opt.Focused {
+		return opt
+	}
+	for _, child := range opt.Options {
+		if found := focusedIn(child); found != nil {
+			return found
+		}
+	}
+	return nil
 }
 
 // cmdRemember stores one fact about the invoker, in the scope of this channel.
@@ -491,7 +682,7 @@ func (b *Bot) cmdRemember(e *discordgo.InteractionCreate, data discordgo.Applica
 		b.log.Errorf("defer /%s: %v", cmdRemember, err)
 		return
 	}
-	content := strings.TrimSpace(optionString(data, "fact"))
+	content := strings.TrimSpace(optionString(data.Options, "fact"))
 	if content == "" {
 		_ = b.followup(e, "Please include something to remember.", true)
 		return
@@ -543,8 +734,8 @@ func (b *Bot) cmdForget(e *discordgo.InteractionCreate, data discordgo.Applicati
 		b.log.Errorf("defer /%s: %v", cmdForget, err)
 		return
 	}
-	all := optionBool(data, "all")
-	includeHistory := optionBool(data, "include_history")
+	all := optionBool(data.Options, "all")
+	includeHistory := optionBool(data.Options, "include_history")
 
 	facts, messages, err := b.memory.Forget(turnFromInteraction(e), all, includeHistory)
 	if err != nil {

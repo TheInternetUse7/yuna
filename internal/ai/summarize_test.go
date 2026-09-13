@@ -118,31 +118,91 @@ func TestParseSummaryJSONTakesOutermostObject(t *testing.T) {
 // addressed by its own driver name.
 func testProviders() (config.Provider, []config.Provider) {
 	primary := config.Provider{
-		Name: "gemini", Driver: schemas.Gemini, Model: "gemini-2.5-flash",
+		Name: "gemini", Driver: schemas.Gemini,
+		Models: []string{"gemini-2.5-flash", "gemini-2.5-pro"},
 		APIKey: "key", Tools: true,
 	}
 	secondary := config.Provider{
-		Name: "groq", Driver: schemas.Groq, Model: "llama-3.3-70b-versatile",
+		Name: "groq", Driver: schemas.Groq, Models: []string{"llama-3.3-70b-versatile"},
 		APIKey: "key", Tools: true,
 	}
 	local := config.Provider{
-		Name: "my-vllm", Driver: schemas.ModelProvider("my-vllm"), Model: "qwen3-32b",
+		Name: "my-vllm", Driver: schemas.ModelProvider("my-vllm"), Models: []string{"qwen3-32b"},
 		BaseURL: "http://127.0.0.1:8000/v1", Tools: true, IsCustom: true, KeyLess: true,
 	}
 	return primary, []config.Provider{primary, secondary, local}
 }
 
-func TestFallbacksForSkipsPrimary(t *testing.T) {
+// The ladder spends the primary provider's other models before leaving the
+// vendor, and never repeats the attempt that just failed.
+func TestFallbacksForCoversSiblingModelsThenOtherProviders(t *testing.T) {
 	primary, chain := testProviders()
-	fallbacks := fallbacksFor(chain, primary)
-	if len(fallbacks) != len(chain)-1 {
-		t.Fatalf("got %d fallbacks for a chain of %d, want %d",
-			len(fallbacks), len(chain), len(chain)-1)
+	fallbacks := fallbacksFor(chain, primary, primary.Default())
+
+	want := []schemas.Fallback{
+		{Provider: schemas.Gemini, Model: "gemini-2.5-pro"},
+		{Provider: schemas.Groq, Model: "llama-3.3-70b-versatile"},
+		{Provider: schemas.ModelProvider("my-vllm"), Model: "qwen3-32b"},
+	}
+	if len(fallbacks) != len(want) {
+		t.Fatalf("got %d fallbacks %v, want %d %v", len(fallbacks), fallbacks, len(want), want)
+	}
+	for i := range want {
+		if fallbacks[i] != want[i] {
+			t.Fatalf("fallback %d = %v, want %v", i, fallbacks[i], want[i])
+		}
+	}
+}
+
+// When the model being attempted is not the provider's default, the default
+// becomes a fallback and the attempted pair is skipped.
+func TestFallbacksForSkipsAttemptedModelOnly(t *testing.T) {
+	primary, chain := testProviders()
+	fallbacks := fallbacksFor(chain, primary, "gemini-2.5-pro")
+
+	if len(fallbacks) == 0 {
+		t.Fatal("expected fallbacks")
+	}
+	if got := fallbacks[0]; got.Model != "gemini-2.5-flash" {
+		t.Fatalf("first fallback = %v, want the provider's default model", got)
 	}
 	for _, f := range fallbacks {
-		if f.Provider == primary.Driver {
-			t.Fatalf("the primary %q appeared in its own fallback list", primary.Driver)
+		if f.Provider == schemas.Gemini && f.Model == "gemini-2.5-pro" {
+			t.Fatal("the attempted model appeared in its own fallback list")
 		}
+	}
+}
+
+// A model listed under two providers must appear once: a repeat only adds a
+// round trip to every failure.
+func TestFallbacksForDropsRepeats(t *testing.T) {
+	primary := config.Provider{
+		Name: "groq", Driver: schemas.Groq,
+		Models: []string{"openai/gpt-oss-120b"},
+		APIKey: "key", Tools: true,
+	}
+	duplicate := config.Provider{
+		Name: "openrouter", Driver: schemas.OpenRouter,
+		Models: []string{"openai/gpt-oss-120b", "meta/llama-3.3-70b"},
+		APIKey: "key", Tools: true,
+	}
+	chain := []config.Provider{primary, duplicate}
+
+	fallbacks := fallbacksFor(chain, primary, primary.Default())
+	want := []schemas.Fallback{{Provider: schemas.OpenRouter, Model: "openai/gpt-oss-120b"}}
+	if len(fallbacks) != 1 || fallbacks[0] != want[0] {
+		t.Fatalf("fallbacks = %v, want a single %v", fallbacks, want)
+	}
+}
+
+// A lone provider with a single model has nothing to fall back to.
+func TestFallbacksForSoleProviderIsEmpty(t *testing.T) {
+	primary := config.Provider{
+		Name: "groq", Driver: schemas.Groq,
+		Models: []string{"llama-3.3-70b-versatile"}, APIKey: "key", Tools: true,
+	}
+	if got := fallbacksFor([]config.Provider{primary}, primary, primary.Default()); len(got) != 0 {
+		t.Fatalf("fallbacks = %v, want none", got)
 	}
 }
 

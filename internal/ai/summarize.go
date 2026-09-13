@@ -47,8 +47,8 @@ Rules for "facts":
 // Summarize produces a rolling summary plus extracted facts for one channel's
 // transcript. The transcript must already be rendered with author names; the
 // caller validates that every extracted username really appears in it.
-func (c *Client) Summarize(ctx context.Context, provider config.Provider, chain []config.Provider,
-	transcript string) (*SummaryResult, error) {
+func (c *Client) Summarize(ctx context.Context, provider config.Provider, chains []config.Provider,
+	model, transcript string) (*SummaryResult, error) {
 	temperature := 0.0
 	msgs := []schemas.ChatMessage{
 		{
@@ -63,7 +63,8 @@ func (c *Client) Summarize(ctx context.Context, provider config.Provider, chain 
 
 	resp, err := c.do(ctx, request{
 		primary:     provider,
-		fallbacks:   fallbacksFor(chain, provider),
+		model:       model,
+		fallbacks:   fallbacksFor(chains, provider, model),
 		messages:    msgs,
 		temperature: &temperature,
 	})

@@ -1,5 +1,5 @@
 // Package store owns Yuna's SQLite persistence: message history, AI channels,
-// preferred-model overrides, per-user facts and channel summaries.
+// per-scope model selections, per-user facts and channel summaries.
 //
 // Discord snowflakes are stored as TEXT because they exceed the range of a
 // signed 64-bit integer in some code paths and never need arithmetic here.
@@ -22,6 +22,15 @@ import (
 const (
 	ScopeDM    = "dm"
 	ScopeGuild = "guild"
+)
+
+// Scope kinds for model preferences. They reuse the fact vocabulary so the two
+// features read the same way, but a preference's scope ID means something
+// slightly different: for ScopeDM it is the user's ID, not a channel ID,
+// because a model choice follows the person across every DM.
+const (
+	PreferenceScopeDM    = ScopeDM
+	PreferenceScopeGuild = ScopeGuild
 )
 
 // Roles stored in messages.role.
@@ -81,9 +90,11 @@ type ChannelSummary struct {
 	UpdatedAt              int64
 }
 
-// PreferredModel pins a provider to the front of the chain for one guild.
-type PreferredModel struct {
-	GuildID      string
+// ModelPreference is a stored model choice: which provider and model should
+// answer, for one guild or for one person's DMs.
+type ModelPreference struct {
+	ScopeType    string // PreferenceScopeGuild or PreferenceScopeDM
+	ScopeID      string // guild ID, or user ID for DMs
 	ProviderName string
 	ModelName    string
 	SetByUserID  string
@@ -340,43 +351,49 @@ func (s *Store) CountAIChannels() (int, error) {
 	return count, nil
 }
 
-// SetPreferredModel pins a provider to the front of the chain for one guild.
-func (s *Store) SetPreferredModel(guildID, provider, model, userID string) error {
-	_, err := s.db.Exec(`INSERT INTO preferred_models
-			(guild_id, provider_name, model_name, set_by_user_id, set_at)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(guild_id) DO UPDATE SET
+// SetModelPreference records a model choice for one scope, replacing any
+// previous choice in that scope.
+func (s *Store) SetModelPreference(p ModelPreference) error {
+	if p.SetAt == 0 {
+		p.SetAt = time.Now().Unix()
+	}
+	_, err := s.db.Exec(`INSERT INTO model_preferences
+			(scope_type, scope_id, provider_name, model_name, set_by_user_id, set_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(scope_type, scope_id) DO UPDATE SET
 			provider_name  = excluded.provider_name,
 			model_name     = excluded.model_name,
 			set_by_user_id = excluded.set_by_user_id,
 			set_at         = excluded.set_at`,
-		guildID, provider, model, userID, time.Now().Unix())
+		p.ScopeType, p.ScopeID, p.ProviderName, p.ModelName, p.SetByUserID, p.SetAt)
 	if err != nil {
-		return fmt.Errorf("set preferred model for %s: %w", guildID, err)
+		return fmt.Errorf("set model preference for %s %s: %w", p.ScopeType, p.ScopeID, err)
 	}
 	return nil
 }
 
-// PreferredModel returns the guild's override, or nil when none is set.
-func (s *Store) PreferredModel(guildID string) (*PreferredModel, error) {
-	var p PreferredModel
-	err := s.db.QueryRow(`SELECT guild_id, provider_name, model_name, set_by_user_id, set_at
-		FROM preferred_models WHERE guild_id = ?`, guildID).
-		Scan(&p.GuildID, &p.ProviderName, &p.ModelName, &p.SetByUserID, &p.SetAt)
+// ModelPreference returns the stored choice for one scope, or nil when the
+// scope has none.
+func (s *Store) ModelPreference(scopeType, scopeID string) (*ModelPreference, error) {
+	var p ModelPreference
+	err := s.db.QueryRow(`SELECT scope_type, scope_id, provider_name, model_name, set_by_user_id, set_at
+		FROM model_preferences WHERE scope_type = ? AND scope_id = ?`, scopeType, scopeID).
+		Scan(&p.ScopeType, &p.ScopeID, &p.ProviderName, &p.ModelName, &p.SetByUserID, &p.SetAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("preferred model for %s: %w", guildID, err)
+		return nil, fmt.Errorf("model preference for %s %s: %w", scopeType, scopeID, err)
 	}
 	return &p, nil
 }
 
-// ClearPreferredModel removes the guild's override.
-func (s *Store) ClearPreferredModel(guildID string) error {
-	_, err := s.db.Exec(`DELETE FROM preferred_models WHERE guild_id = ?`, guildID)
+// ClearModelPreference removes one scope's choice.
+func (s *Store) ClearModelPreference(scopeType, scopeID string) error {
+	_, err := s.db.Exec(`DELETE FROM model_preferences WHERE scope_type = ? AND scope_id = ?`,
+		scopeType, scopeID)
 	if err != nil {
-		return fmt.Errorf("clear preferred model for %s: %w", guildID, err)
+		return fmt.Errorf("clear model preference for %s %s: %w", scopeType, scopeID, err)
 	}
 	return nil
 }

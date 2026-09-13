@@ -28,17 +28,20 @@ type Settings struct {
 	HistoryWindow   int
 	SummaryEvery    int
 	SummaryProvider config.Provider
-	Chain           []config.Provider
-	FactsPerUser    int
-	FactsInject     int
-	Enabled         bool
+	// SummaryModel is the model the summariser asks for. Kept separate from the
+	// provider's default so memory can run on a cheaper model than chat.
+	SummaryModel string
+	Chain        []config.Provider
+	FactsPerUser int
+	FactsInject  int
+	Enabled      bool
 }
 
 // Summarizer is the single AI capability memory needs. *ai.Client satisfies it;
 // tests inject a fake.
 type Summarizer interface {
 	Summarize(ctx context.Context, provider config.Provider, chain []config.Provider,
-		transcript string) (*ai.SummaryResult, error)
+		model, transcript string) (*ai.SummaryResult, error)
 }
 
 // Manager is the bot's only entry point to memory.
@@ -329,7 +332,8 @@ func (m *Manager) refreshSummary(ctx context.Context, channelID, guildID string)
 		return nil
 	}
 
-	result, err := m.summarizer.Summarize(ctx, m.settings.SummaryProvider, m.settings.Chain, Transcript(msgs))
+	result, err := m.summarizer.Summarize(ctx, m.settings.SummaryProvider, m.settings.Chain,
+		m.settings.SummaryModel, Transcript(msgs))
 	if err != nil {
 		// Leave covers_through_message_id untouched so the next trigger retries.
 		return err

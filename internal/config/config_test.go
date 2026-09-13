@@ -11,14 +11,14 @@ import (
 // the next.
 var envVars = []string{
 	"DISCORD_TOKEN", "DISCORD_GUILD_ID", "YUNA_PROVIDERS",
-	"YUNA_HISTORY_WINDOW", "YUNA_SUMMARY_EVERY", "YUNA_SUMMARY_PROVIDER",
+	"YUNA_HISTORY_WINDOW", "YUNA_SUMMARY_EVERY", "YUNA_SUMMARY_PROVIDER", "YUNA_SUMMARY_MODEL",
 	"YUNA_FACTS_PER_USER_LIMIT", "YUNA_FACTS_INJECT_LIMIT", "YUNA_MEMORY_ENABLED",
 	"YUNA_MAX_RETRIES", "YUNA_REQUEST_TIMEOUT_SECONDS", "YUNA_SYSTEM_PROMPT",
 	"YUNA_DB_PATH", "YUNA_LOG_FILE", "YUNA_DEBUG",
-	"GEMINI_MODEL", "GEMINI_API_KEY", "GEMINI_TOOLS", "GEMINI_BASE_URL",
-	"GROQ_MODEL", "GROQ_API_KEY",
-	"OPENAI_MODEL", "OPENAI_API_KEY", "OPENAI_BASE_URL",
-	"MY_VLLM_MODEL", "MY_VLLM_BASE_URL", "MY_VLLM_API_KEY", "MY_VLLM_TOOLS",
+	"GEMINI_MODELS", "GEMINI_API_KEY", "GEMINI_TOOLS", "GEMINI_BASE_URL",
+	"GROQ_MODELS", "GROQ_API_KEY",
+	"OPENAI_MODELS", "OPENAI_API_KEY", "OPENAI_BASE_URL",
+	"MY_VLLM_MODELS", "MY_VLLM_BASE_URL", "MY_VLLM_API_KEY", "MY_VLLM_TOOLS",
 }
 
 func withEnv(t *testing.T, values map[string]string) {
@@ -35,9 +35,9 @@ func validEnv() map[string]string {
 	return map[string]string{
 		"DISCORD_TOKEN":  "token",
 		"YUNA_PROVIDERS": "gemini,groq",
-		"GEMINI_MODEL":   "gemini-2.5-flash",
+		"GEMINI_MODELS":  "gemini-2.5-flash",
 		"GEMINI_API_KEY": "gemini-key",
-		"GROQ_MODEL":     "llama-3.3-70b-versatile",
+		"GROQ_MODELS":    "llama-3.3-70b-versatile",
 		"GROQ_API_KEY":   "groq-key",
 	}
 }
@@ -55,8 +55,8 @@ func TestLoadValidConfig(t *testing.T) {
 	if cfg.Providers[0].Driver != schemas.Gemini {
 		t.Fatalf("first driver = %q, want %q", cfg.Providers[0].Driver, schemas.Gemini)
 	}
-	if cfg.Providers[0].Model != "gemini-2.5-flash" {
-		t.Fatalf("first model = %q", cfg.Providers[0].Model)
+	if got := cfg.Providers[0].Models; len(got) != 1 || got[0] != "gemini-2.5-flash" {
+		t.Fatalf("first provider models = %v", got)
 	}
 	if !cfg.Providers[0].Tools {
 		t.Fatal("gemini should support tools by default")
@@ -93,7 +93,7 @@ func TestLoadValidConfig(t *testing.T) {
 func TestLoadReportsEveryProblemAtOnce(t *testing.T) {
 	withEnv(t, map[string]string{
 		"YUNA_PROVIDERS":      "gemini,mystery",
-		"GROQ_MODEL":          "unused",
+		"GROQ_MODELS":         "unused",
 		"YUNA_HISTORY_WINDOW": "-3",
 	})
 
@@ -104,7 +104,7 @@ func TestLoadReportsEveryProblemAtOnce(t *testing.T) {
 	message := err.Error()
 	for _, want := range []string{
 		"DISCORD_TOKEN",       // missing token
-		"GEMINI_MODEL",        // missing model
+		"GEMINI_MODELS",       // missing model
 		"GEMINI_API_KEY",      // missing key for a built-in
 		"mystery",             // unknown provider with no base URL
 		"YUNA_HISTORY_WINDOW", // negative number
@@ -160,7 +160,7 @@ func TestLoadRejectsBaseURLOnUnsupportedBuiltin(t *testing.T) {
 func TestLoadAcceptsBaseURLForOpenAI(t *testing.T) {
 	env := validEnv()
 	env["YUNA_PROVIDERS"] = "openai"
-	env["OPENAI_MODEL"] = "gpt-4o-mini"
+	env["OPENAI_MODELS"] = "gpt-4o-mini"
 	env["OPENAI_API_KEY"] = "key"
 	env["OPENAI_BASE_URL"] = "https://gateway.example/v1"
 	withEnv(t, env)
@@ -183,7 +183,7 @@ func TestLoadResolvesCustomProviderAsOpenAICompatible(t *testing.T) {
 	withEnv(t, map[string]string{
 		"DISCORD_TOKEN":    "token",
 		"YUNA_PROVIDERS":   "my-vllm",
-		"MY_VLLM_MODEL":    "qwen2.5-14b-instruct",
+		"MY_VLLM_MODELS":   "qwen2.5-14b-instruct",
 		"MY_VLLM_BASE_URL": "http://127.0.0.1:8000/v1",
 		"MY_VLLM_TOOLS":    "true",
 	})

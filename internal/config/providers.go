@@ -18,8 +18,11 @@ type Provider struct {
 	Name string
 	// Driver is the Bifrost provider key, e.g. schemas.Gemini.
 	Driver schemas.ModelProvider
-	// Model is the bare, provider-native model ID (no "provider/" prefix).
-	Model string
+	// Models are the bare, provider-native model IDs (no "provider/" prefix),
+	// in the order they should be tried. The first is the provider's default;
+	// the rest are per-model fallbacks, which is what lets a single 429 or a
+	// retired model roll within one vendor instead of leaving it.
+	Models []string
 	// APIKey is empty for keyless custom endpoints such as local Ollama.
 	APIKey string
 	// Tools reports whether the remember tool may be offered to this provider.
@@ -31,6 +34,28 @@ type Provider struct {
 	IsCustom bool
 	// KeyLess marks a custom provider that needs no API key.
 	KeyLess bool
+}
+
+// Default is the model this provider answers with when nothing overrides it.
+// resolveProviders guarantees at least one model, so this never panics on a
+// provider built by Load.
+func (p Provider) Default() string {
+	if len(p.Models) == 0 {
+		return ""
+	}
+	return p.Models[0]
+}
+
+// HasModel reports whether id appears in this provider's model list. The
+// comparison is exact: model IDs are vendor identifiers, and some vendors
+// ship names that differ only by case.
+func (p Provider) HasModel(id string) bool {
+	for _, m := range p.Models {
+		if m == id {
+			return true
+		}
+	}
+	return false
 }
 
 type catalogEntry struct {
@@ -99,10 +124,9 @@ func resolveProviders(raw string, problems *[]string) []Provider {
 
 		prefix := EnvPrefix(name)
 		baseURL := normalizeBaseURL(os.Getenv(prefix + "_BASE_URL"))
-		model := strings.TrimSpace(os.Getenv(prefix + "_MODEL"))
 		apiKey := strings.TrimSpace(os.Getenv(prefix + "_API_KEY"))
 
-		p := Provider{Name: name, Model: model, APIKey: apiKey}
+		p := Provider{Name: name, APIKey: apiKey}
 
 		entry, isCatalog := providerCatalog[name]
 		switch {
@@ -137,9 +161,11 @@ func resolveProviders(raw string, problems *[]string) []Provider {
 			continue
 		}
 
-		if p.Model == "" {
-			*problems = append(*problems, fmt.Sprintf("%s_MODEL is required for provider %q", prefix, name))
+		models := modelsFromEnv(os.Getenv(prefix+"_MODELS"), name, problems)
+		if len(models) == 0 {
+			*problems = append(*problems, fmt.Sprintf("%s_MODELS is required for provider %q", prefix, name))
 		}
+		p.Models = models
 		// Custom providers may legitimately be keyless (local Ollama, vLLM).
 		// Built-ins always need a key.
 		if isCatalog && apiKey == "" {
@@ -170,6 +196,32 @@ func parseBool(raw string) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf("invalid boolean %q", raw)
+}
+
+// modelsFromEnv parses a provider's <PREFIX>_MODELS list: comma-separated
+// model IDs in the order they should be tried. A repeated ID is reported and
+// dropped, because trying the same model twice only burns a fallback slot and
+// doubles the latency of a failing request. Order is preserved, since the
+// operator's ordering is the priority.
+func modelsFromEnv(raw, provider string, problems *[]string) []string {
+	var models []string
+	seen := make(map[string]bool)
+
+	for _, part := range strings.Split(raw, ",") {
+		model := strings.TrimSpace(part)
+		if model == "" {
+			continue
+		}
+		if seen[model] {
+			*problems = append(*problems, fmt.Sprintf(
+				"%s_MODELS lists model %q more than once for provider %q",
+				EnvPrefix(provider), model, provider))
+			continue
+		}
+		seen[model] = true
+		models = append(models, model)
+	}
+	return models
 }
 
 // normalizeBaseURL trims whitespace and a trailing slash or /v1 from a
