@@ -1,721 +1,233 @@
-# Yuna AI Discord Bot
+# Yuna
 
-<div align="center">
+A Discord chatbot with memory, written in Go and backed by
+[Bifrost](https://github.com/maximhq/bifrost) for provider routing and failover.
 
-![Discord](https://img.shields.io/badge/Discord-Bot-7289da?style=for-the-badge&logo=discord&logoColor=white)
-![Python](https://img.shields.io/badge/Python-3.10+-3776ab?style=for-the-badge&logo=python&logoColor=white)
-![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)
+## Requirements
 
-**A resilient, multi-provider AI Discord bot with intelligent fallback and enterprise-grade features**
+- Go 1.27 or newer to build from source (or Docker).
+- A Discord application with a bot user.
+- At least one provider API key.
 
-[Features](#-features) • [Quick Start](#-quick-start) • [Deployment](#-deployment-guide) • [Configuration](#-configuration) • [Commands](#-commands)
+### Discord setup
 
-</div>
+1. Create an application at <https://discord.com/developers/applications>.
+2. Under **Bot**, copy the token into `DISCORD_TOKEN`.
+3. Under **Bot -> Privileged Gateway Intents**, enable **Message Content** and
+   **Server Members**. Both are required: without the first the bot receives
+   empty message content, and without the second it cannot resolve member
+   nicknames.
+4. Invite the bot with the `bot` and `applications.commands` scopes.
 
----
+## Configuration
 
-## 🚀 Features
+Copy `.env.example` to `.env` and fill it in. Every setting is documented in
+that file; the essentials are:
 
-### **Core Capabilities**
-- **🤖 Multi-Provider AI Support** - AI providers with intelligent fallback (Gemini, OpenRouter, Cerebras, Groq, Cohere, Together AI)
-- **⚡ Smart Rate Limit Handling** - Automatic cooldowns and provider switching on rate limits
-- **🎯 Model Attribution** - Every response shows which AI model generated it
-- **🔧 Admin Model Override** - Administrators can manually select preferred models per server
-- **💬 Multiple Interaction Methods** - Slash commands, mentions, replies, and dedicated AI channels
+| Variable                       | Required    | Default       | Purpose                                                       |
+| ------------------------------ | ----------- | ------------- | ------------------------------------------------------------- |
+| `DISCORD_TOKEN`                | yes         | -             | Bot token                                                     |
+| `DISCORD_GUILD_ID`             | no          | global        | Register commands on one server (instant) instead of globally |
+| `YUNA_PROVIDERS`               | yes         | -             | Ordered chain: first is primary, the rest are fallbacks       |
+| `<NAME>_MODEL`                 | yes         | -             | Provider-native model ID                                      |
+| `<NAME>_API_KEY`               | built-ins   | -             | API key for that provider                                     |
+| `<NAME>_BASE_URL`              | custom only | -             | OpenAI-compatible root including `/v1`                        |
+| `<NAME>_TOOLS`                 | no          | catalog       | Whether the `remember` tool is offered to this provider       |
+| `YUNA_MEMORY_ENABLED`          | no          | `true`        | Master switch for summaries and facts                         |
+| `YUNA_HISTORY_WINDOW`          | no          | `15`          | Messages sent as conversation context                         |
+| `YUNA_SUMMARY_EVERY`           | no          | `25`          | New messages before a summary refresh                         |
+| `YUNA_SUMMARY_PROVIDER`        | no          | last in chain | Provider used for summaries                                   |
+| `YUNA_FACTS_PER_USER_LIMIT`    | no          | `50`          | Stored facts per person per scope                             |
+| `YUNA_FACTS_INJECT_LIMIT`      | no          | `20`          | Facts injected into one prompt                                |
+| `YUNA_MAX_RETRIES`             | no          | `2`           | Retries per provider before failing over                      |
+| `YUNA_REQUEST_TIMEOUT_SECONDS` | no          | `30`          | Per-request timeout                                           |
+| `YUNA_SYSTEM_PROMPT`           | no          | built-in      | Replaces the persona                                          |
+| `YUNA_DB_PATH`                 | no          | `yuna.db`     | `/data/yuna.db` in the container                              |
+| `YUNA_LOG_FILE`                | no          | `yuna.log`    | `/data/yuna.log` in the container                             |
+| `YUNA_DEBUG`                   | no          | `false`       | `1` enables debug logging                                     |
 
-### **Interaction Methods**
-1. **Slash Commands** - `/chat [prompt]` for direct AI interaction
-2. **Direct Mentions** - `@Yuna hello there!` for natural conversation
-3. **Reply Chains** - Reply to bot messages to continue conversations
-4. **AI Channels** - Designated channels where the bot responds to every message
+### Choosing providers
 
-### **Enterprise Features**
-- **🛡️ Resilient Architecture** - Handles provider failures gracefully
-- **📊 Comprehensive Logging** - Rotating logs with Unicode support and detailed debugging
-- **⚙️ Per-Server Configuration** - Each Discord server can have its own settings
-- **🔒 Admin-Only Commands** - Secure management interface for administrators
-- **💾 Persistent Storage** - SQLite database for settings, cooldowns, and preferences
+`YUNA_PROVIDERS` is an ordered list. The first entry answers unless it fails, in
+which case Bifrost moves down the list:
 
----
-
-## ⚡ Quick Start
-
-### **Prerequisites**
-- Python 3.10 or higher
-- Discord Bot Token ([Create one here](https://discord.com/developers/applications))
-- At least one AI provider API key (see [Provider Setup](#provider-api-keys))
-
-### **Installation**
-
-1. **Clone the repository:**
-```bash
-git clone https://github.com/TheInternetUse7/yuna
-cd yuna
+```
+YUNA_PROVIDERS=gemini,groq,openrouter
+GEMINI_MODEL=gemini-2.5-flash
+GEMINI_API_KEY=...
+GROQ_MODEL=llama-3.3-70b-versatile
+GROQ_API_KEY=...
+OPENROUTER_MODEL=anthropic/claude-3.5-sonnet
+OPENROUTER_API_KEY=...
 ```
 
-2. **Create virtual environment:**
-```bash
-# Windows
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+Built-in names: `gemini`, `openai`, `anthropic`, `groq`, `cerebras`,
+`openrouter`, `cohere`, `mistral`, `deepseek`, `xai`, `perplexity`, `nebius`,
+`fireworks`, `huggingface`, `replicate`, `sarvam`, `parasail`, `wafer`.
 
-# Linux/macOS
-python -m venv .venv
-source .venv/bin/activate
+### Self-hosted and OpenAI-compatible endpoints
+
+Any other name becomes a custom provider as soon as you give it a base URL. This
+covers Ollama, vLLM, LM Studio, llama.cpp, and gateways:
+
+```
+YUNA_PROVIDERS=ollama,gemini
+OLLAMA_MODEL=llama3.1:8b
+OLLAMA_BASE_URL=http://host.docker.internal:11434/v1
+GEMINI_MODEL=gemini-2.5-flash
+GEMINI_API_KEY=...
 ```
 
-3. **Install dependencies:**
-```bash
-pip install -r requirements.txt
-```
+No API key is needed for a custom endpoint; omit `<NAME>_API_KEY` and the
+provider is registered as keyless. A private or loopback base URL is allowed
+automatically, while public hosts still go through the normal path.
 
-4. **Configure environment:**
-```bash
-# Copy example environment file
-cp .env.example .env
+Because custom providers keep their own name, two OpenAI-compatible endpoints
+can sit in the same chain without colliding.
 
-# Edit .env with your tokens (see Configuration section)
-```
+## Commands
 
-5. **Run the bot:**
-```bash
-python yuna_bot.py
-```
+| Command                                             | Who      | Reply     | What it does                                |
+| --------------------------------------------------- | -------- | --------- | ------------------------------------------- |
+| `/chat prompt:<text>`                               | everyone | public    | Ask a one-off question                      |
+| `/remember fact:<text>`                             | everyone | ephemeral | Ask Yuna to remember something about you    |
+| `/memory`                                           | everyone | ephemeral | Show what she remembers about you here      |
+| `/forget [all] [include_history]`                   | everyone | ephemeral | Delete what she remembers about you         |
+| `/set_ai_channel`                                   | admin    | ephemeral | Reply to every message in this channel      |
+| `/remove_ai_channel`                                | admin    | ephemeral | Stop replying to every message              |
+| `/list_ai_channels`                                 | admin    | ephemeral | List this server's AI channels              |
+| `/provider_status`                                  | admin    | ephemeral | Show the effective chain and settings       |
+| `/set_preferred_model provider:<name> [model:<id>]` | admin    | ephemeral | Pin a provider to the front for this server |
+| `/clear_preferred_model`                            | admin    | ephemeral | Return to the configured order              |
 
-### **First Time Setup**
-1. Invite the bot to your Discord server with appropriate permissions
-2. Use `/set_ai_channel` in a channel to enable AI responses
-3. Test with `/chat Hello!` or mention the bot
-4. Check `/provider_status` to see which AI providers are available
+`/memory` and `/forget` always act on the person who ran them, in the scope they
+ran them in. Those replies are ephemeral.
 
----
+## Memory and privacy
 
-## 🚀 Deployment Guide
+Memory has three parts:
 
-### **Local Development**
+1. **Conversation history**, per channel.
+2. **Rolling summaries**, per channel, refreshed in the background once enough
+   new messages accumulate.
+3. **Facts about people**, per scope.
 
-Perfect for testing and development:
+### Scopes
 
-```bash
-# 1. Setup environment
-python -m venv .venv
-source .venv/bin/activate  # or .\.venv\Scripts\Activate.ps1 on Windows
-pip install -r requirements.txt
+A fact belongs to exactly one scope and one person:
 
-# 2. Configure
-cp .env.example .env
-# Edit .env with your tokens
+- In a server, the scope is that server. Facts follow you between its channels.
+- A DM is its own scope, private to you.
+- Facts never cross between servers, and never between a server and a DM.
 
-# 3. Run
-python yuna_bot.py
-```
+### What gets stored
 
-### **Production Deployment**
+Only messages Yuna has a reason to remember are saved:
 
-#### **Option 1: VPS/Cloud Server (Recommended)**
+- any message in an AI channel,
+- any DM,
+- any message that mentions her,
+- any reply to something she wrote,
+- everything she writes.
 
-**System Requirements:**
-- Ubuntu 20.04+ / CentOS 8+ / Debian 11+
-- 1GB RAM minimum (2GB recommended)
-- 10GB disk space
-- Python 3.10+
+`/forget` is the opt-out: by default it removes your facts in the current scope,
+`all: true` removes them everywhere, and `include_history: true` also deletes
+your stored messages from that channel.
 
-**Step-by-step deployment:**
+Nothing expires on its own.
 
-```bash
-# 1. Update system
-sudo apt update && sudo apt upgrade -y
+## Running
 
-# 2. Install Python and dependencies
-sudo apt install python3.10 python3.10-venv python3-pip git -y
-
-# 3. Create bot user (security best practice)
-sudo useradd -m -s /bin/bash yuna-bot
-sudo su - yuna-bot
-
-# 4. Clone and setup
-git clone https://github.com/TheInternetUse7/yuna
-cd yuna
-python3.10 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# 5. Configure environment
-cp .env.example .env
-nano .env  # Add your tokens
-
-# 6. Test run
-python yuna_bot.py
-```
-
-**Create systemd service for auto-start:**
+### Locally
 
 ```bash
-# Exit bot user
-exit
-
-# Create service file
-sudo nano /etc/systemd/system/yuna-bot.service
+go run . -check   # validate .env, open and migrate the database, then exit
+go run .
 ```
 
-Add this content:
-```ini
-[Unit]
-Description=Yuna Discord AI Bot
-After=network.target
+`-check` is the quick way to test a configuration change: it loads `.env`,
+validates every provider, opens the SQLite database and initialises the AI
+client, then exits without connecting to Discord.
 
-[Service]
-Type=simple
-User=yuna-bot
-WorkingDirectory=/home/yuna-bot/yuna
-Environment=PATH=/home/yuna-bot/yuna/.venv/bin
-ExecStart=/home/yuna-bot/yuna/.venv/bin/python yuna_bot.py
-Restart=always
-RestartSec=10
+`.env` is read from the working directory, so run these from the repository
+root. Variables already present in the environment win over the file.
 
-[Install]
-WantedBy=multi-user.target
-```
-
-**Enable and start service:**
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable yuna-bot
-sudo systemctl start yuna-bot
-
-# Check status
-sudo systemctl status yuna-bot
-
-# View logs
-sudo journalctl -u yuna-bot -f
-```
-
-#### **Option 2: Docker Deployment**
-
-**Create Dockerfile:**
-```dockerfile
-FROM python:3.10-slim
-
-WORKDIR /app
-
-# Install dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy application
-COPY . .
-
-# Create non-root user
-RUN useradd -m -u 1000 yuna && chown -R yuna:yuna /app
-USER yuna
-
-# Run bot
-CMD ["python", "yuna_bot.py"]
-```
-
-**Create docker-compose.yml:**
-```yaml
-version: '3.8'
-
-services:
-  yuna-bot:
-    build: .
-    container_name: yuna
-    restart: unless-stopped
-    environment:
-      - DISCORD_TOKEN=${DISCORD_TOKEN}
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      # Add other API keys as needed
-    volumes:
-      - ./data:/app/data  # Persist database and logs
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-```
-
-**Deploy with Docker:**
-```bash
-# Build and run
-docker-compose up -d
-
-# View logs
-docker-compose logs -f
-
-# Update deployment
-git pull
-docker-compose build
-docker-compose up -d
-```
-
-#### **Option 3: Cloud Platform Deployment**
-
-**Heroku:**
-```bash
-# Install Heroku CLI
-# Create Procfile
-echo "worker: python yuna_bot.py" > Procfile
-
-# Deploy
-heroku create your-bot-name
-heroku config:set DISCORD_TOKEN=your_token
-heroku config:set GEMINI_API_KEY=your_key
-git push heroku main
-heroku ps:scale worker=1
-```
-
-**Railway/Render:**
-- Connect your GitHub repository
-- Set environment variables in dashboard
-- Deploy automatically on git push
-
-### **Production Monitoring**
-
-**Log Management:**
-```bash
-# View live logs
-tail -f yuna.log
-
-# Rotate logs manually
-logrotate -f /etc/logrotate.d/yuna-bot
-```
-
-**Health Monitoring:**
-```bash
-# Check bot status
-systemctl status yuna-bot
-
-# Monitor resource usage
-htop
-df -h
-```
-
-**Backup Strategy:**
-```bash
-# Backup database and logs
-tar -czf yuna-backup-$(date +%Y%m%d).tar.gz yuna.db yuna.log*
-
-# Automated daily backup
-echo "0 2 * * * cd /home/yuna-bot/yuna && tar -czf backups/yuna-backup-\$(date +\%Y\%m\%d).tar.gz yuna.db yuna.log*" | crontab -
-```
-
----
-
-## ⚙️ Configuration
-
-### **Environment Variables**
-
-Create a `.env` file in the project root:
+### Docker
 
 ```bash
-# Required: Discord Bot Token
-DISCORD_TOKEN=your_discord_bot_token_here
-
-# Optional: AI Provider API Keys (add as many as you want)
-GEMINI_API_KEY=your_google_ai_studio_key
-GROQ_API_KEY=your_groq_api_key
-OPENROUTER_API_KEY=your_openrouter_key
-CEREBRAS_API_KEY=your_cerebras_key
-COHERE_API_KEY=your_cohere_key
-TOGETHER_AI_API_KEY=your_together_ai_key
-
-# Optional: Logging Configuration
-LOG_LEVEL=INFO
-LOG_FILE_MAX_SIZE=5242880  # 5MB in bytes
-LOG_BACKUP_COUNT=3
+docker build -t yuna:test .
+docker run --rm --env-file .env -v yuna-data:/data yuna:test
 ```
 
-### **Provider API Keys**
+### On the server
 
-The bot works with any combination of these providers. **You only need at least one API key** to get started:
+`docker-compose.yml` pulls the published image:
 
-#### **🥇 Recommended Providers (Free Tiers Available)**
-
-**Google Gemini (Primary)**
-- **Get Key**: [Google AI Studio](https://aistudio.google.com/app/apikey)
-- **Free Tier**: 15 requests/minute, 1 million tokens/day
-- **Environment Variable**: `GEMINI_API_KEY`
-
-**Groq (Fast Inference)**
-- **Get Key**: [Groq Console](https://console.groq.com/keys)
-- **Free Tier**: 30 requests/minute, 14,400 tokens/day
-- **Environment Variable**: `GROQ_API_KEY`
-
-**Cerebras (High Performance)**
-- **Get Key**: [Cerebras Inference](https://inference.cerebras.ai/)
-- **Free Tier**: Available with registration
-- **Environment Variable**: `CEREBRAS_API_KEY`
-
-**OpenRouter**
-- **Get Key**: [OpenRouter](https://openrouter.ai/keys)
-- **Pricing**: Pay-per-use, access to premium models
-- **Environment Variable**: `OPENROUTER_API_KEY`
-
-**Cohere**
-- **Get Key**: [Cohere Dashboard](https://dashboard.cohere.ai/api-keys)
-- **Free Trial**: Available, then pay-per-use
-- **Environment Variable**: `COHERE_API_KEY`
-
-**Together AI (Open Source Models)**
-- **Get Key**: [Together AI](https://api.together.xyz/settings/api-keys)
-- **Pricing**: Competitive rates for open source models
-- **Environment Variable**: `TOGETHER_AI_API_KEY`
-
-### **Bot Configuration**
-
-**Configurable Constants** (in `yuna_bot.py`):
-```python
-# Message Context Limits
-AI_CHANNEL_MESSAGE_LIMIT = 15  # Messages to fetch in AI channels
-REPLY_CHAIN_LIMIT = 15         # Max reply chain depth
-
-# Logging Configuration
-LOG_FILE_MAX_SIZE = 5 * 1024 * 1024  # 5MB max log file size
-LOG_BACKUP_COUNT = 3                  # Number of backup log files
-```
-
-**Provider Configuration** (in `ai_manager.py`):
-```python
-# Cooldown Timers
-DEFAULT_COOLDOWN_SECONDS = 300      # 5 minutes for rate limits
-GENERAL_ERROR_COOLDOWN_SECONDS = 60 # 1 minute for other errors
-```
-
-### **Discord Bot Setup**
-
-1. **Create Discord Application:**
-   - Go to [Discord Developer Portal](https://discord.com/developers/applications)
-   - Click "New Application" and give it a name
-   - Go to "Bot" section and click "Add Bot"
-   - Copy the bot token for your `.env` file
-
-2. **Set Bot Permissions:**
-   Required permissions for full functionality:
-   ```
-   ✅ Send Messages
-   ✅ Use Slash Commands
-   ✅ Read Message History
-   ✅ Add Reactions
-   ✅ Mention Everyone (for @mentions)
-   ✅ Use External Emojis
-   ```
-
-3. **Invite Bot to Server:**
-   - Go to "OAuth2" > "URL Generator"
-   - Select "bot" and "applications.commands" scopes
-   - Select the permissions above
-   - Use generated URL to invite bot
-
-4. **Initial Server Setup:**
-   ```
-   /set_ai_channel          # Make current channel an AI channel
-   /provider_status         # Check which providers are available
-   /chat Hello world!       # Test the bot
-   ```
-
----
-
-## 🎮 Commands
-
-### **User Commands**
-
-| Command | Description | Example |
-|---------|-------------|---------|
-| `/chat [prompt]` | Direct AI conversation | `/chat Explain quantum computing` |
-| `@Yuna [message]` | Mention bot for natural chat | `@Yuna what's the weather like?` |
-| Reply to bot | Continue conversation thread | Reply to any bot message |
-
-### **Admin Commands**
-
-*Requires Administrator permission*
-
-| Command | Description | Example |
-|---------|-------------|---------|
-| `/set_ai_channel` | Make current channel AI-enabled | `/set_ai_channel` |
-| `/remove_ai_channel` | Disable AI in current channel | `/remove_ai_channel` |
-| `/provider_status` | Show AI provider availability | `/provider_status` |
-| `/set_preferred_model [provider] [model]` | Override automatic model selection | `/set_preferred_model gemini` |
-| `/clear_preferred_model` | Return to automatic selection | `/clear_preferred_model` |
-
-### **Usage Examples**
-
-**Basic Conversation:**
-```
-User: /chat What is machine learning?
-Yuna: Machine learning is a subset of artificial intelligence...
-
--# Model: gemini/gemini-2.5-flash
-```
-
-**AI Channel (responds to every message):**
-```
-User: How do I deploy a Python app?
-Yuna: There are several ways to deploy a Python application...
-
--# Model: openrouter/openai/gpt-oss-120b
-```
-
-**Admin Model Override:**
-```
-Admin: /set_preferred_model groq
-Yuna: ✅ Set preferred model for this server: groq
-      Model: groq/llama4-maverick-17b-128e-instruct
-```
-
-**Provider Status Check:**
-```
-Admin: /provider_status
-Yuna: 🤖 Provider Status: 4/6 available
-
-      ✅ Openrouter - openrouter/openai/gpt-oss-120b (Score: 57.9)
-      ✅ Cerebras - cerebras/qwen-3-235b-a22b (Score: 45.3)
-      ⏳ Gemini - Cooldown (2m 30s remaining)
-      ✅ Groq - groq/llama4-maverick-17b-128e-instruct (Score: 35.8)
-```
-
----
-
-## 🏗️ Architecture
-
-### **System Overview**
-
-```
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   Discord API   │◄──►│   yuna_bot.py    │◄──►│   ai_manager.py │
-│                 │    │                  │    │                 │
-│ • Slash Commands│    │ • Event Handling │    │ • Provider Logic│
-│ • Message Events│    │ • Context Gather │    │ • Fallback      │
-│ • Interactions  │    │ • Response Format│    │ • Rate Limiting │
-└─────────────────┘    └──────────────────┘    └─────────────────┘
-                                │                        │
-                                ▼                        ▼
-                       ┌──────────────────┐    ┌─────────────────┐
-                       │   database.py    │    │   LiteLLM       │
-                       │                  │    │                 │
-                       │ • SQLite Storage │    │ • Multi-Provider│
-                       │ • Cooldown Mgmt  │    │ • Unified API   │
-                       │ • Preferences    │    │ • Error Handling│
-                       └──────────────────┘    └─────────────────┘
-```
-
-### **Key Components**
-
-**`yuna_bot.py`** - Discord Interface
-- Event handling (messages, interactions)
-- Context gathering from conversations
-- Response formatting with model attribution
-- Admin command processing
-
-**`ai_manager.py`** - AI Orchestration
-- Multi-provider fallback logic
-- Rate limit and cooldown management
-- Provider priority and selection
-- Response generation coordination
-
-**`database.py`** - Data Persistence
-- SQLite database management
-- AI channel configuration
-- Rate limit cooldown tracking
-- Preferred model storage
-
-**Provider Integration** - LiteLLM
-- Unified interface to AI providers
-- Automatic error handling and retries
-- Consistent response formatting
-- Built-in rate limit detection
-
-### **Data Flow**
-
-1. **User Input** → Discord message/command received
-2. **Context Gathering** → Collect conversation history
-3. **Provider Selection** → Choose best available AI provider
-4. **AI Generation** → Generate response with fallback
-5. **Response Formatting** → Add model attribution
-6. **Discord Output** → Send formatted response
-
-### **File Structure**
-
-```
-yuna/
-├── yuna_bot.py              # Main Discord bot application
-├── ai_manager.py            # AI provider orchestration
-├── database.py              # SQLite database interface
-├── requirements.txt         # Python dependencies
-├── .env.example            # Environment template
-├── README.md               # This documentation
-├── yuna.db                 # SQLite database (created on first run)
-└── yuna.log                # Application logs (rotating)
-```
-
----
-
-## 🔧 Troubleshooting
-
-### **Common Issues**
-
-**Bot doesn't respond to messages:**
 ```bash
-# Check bot permissions
-- Ensure bot has "Send Messages" permission
-- Verify bot can read message history
-- Check if channel is set as AI channel: /set_ai_channel
-
-# Check logs
-tail -f yuna.log
+docker compose pull
+docker compose up -d
+docker compose logs -f
 ```
 
-**"All providers failed" error:**
+The image is `ghcr.io/theinternetuse7/yuna`.
+
+### Backups
+
+The database lives on the `yuna-data` named volume.
+
+SQLite runs in WAL mode. Stop the container first: on a
+clean shutdown SQLite checkpoints the WAL back into `yuna.db`.
+
 ```bash
-# Verify API keys are set
-grep -E "(GEMINI|GROQ|OPENROUTER)" .env
-
-# Check provider status
-# Use /provider_status command in Discord
-
-# Wait for cooldowns to expire
-# Providers may be temporarily rate limited
+docker compose stop
+mkdir -p backups
+docker compose cp yuna:/data/yuna.db "backups/yuna-$(date +%F).db"
+docker compose start
 ```
 
-**Bot crashes on startup:**
+`docker compose cp` needs Compose v2.14 or newer.
+
+To restore, stop the bot, copy the file back, and fix ownership.
+
 ```bash
-# Check Python version
-python --version  # Should be 3.10+
-
-# Verify dependencies
-pip install -r requirements.txt
-
-# Check Discord token
-echo $DISCORD_TOKEN  # Should not be empty
+docker compose stop
+docker compose cp backups/yuna-2026-09-13.db yuna:/data/yuna.db
+docker compose run --rm --user root --entrypoint chown yuna -R 10001:10001 /data
+docker compose start
 ```
 
-**Database errors:**
+`docker compose up`, `pull`, rebuilds and `docker compose down` all leave an
+existing named volume alone, so your data survives them. Only
+`docker compose down -v` or `docker volume rm yuna-data` delete it.
+
+## Health and logs
+
+Logs go to stdout (for `docker logs`) and to `YUNA_LOG_FILE`, which rotates at
+10 MiB with three compressed backups kept.
+
+## Development
+
 ```bash
-# Reset database (WARNING: loses all settings)
-rm yuna.db
-python yuna_bot.py  # Will recreate database
-
-# Check database permissions
-ls -la yuna.db
+go mod tidy
+go vet ./...
+go test ./...
+go build ./...
 ```
 
-### **Debug Mode**
+Layout:
 
-Enable detailed logging:
-```python
-# In yuna_bot.py, change logging level
-logging.basicConfig(level=logging.DEBUG, ...)
+```
+main.go                  wiring: config -> logger -> store -> ai -> bot, and shutdown
+internal/applog/         leveled console + rotating file logging
+internal/config/         environment loading, provider catalog, validation
+internal/store/          SQLite, with ordered migrations
+internal/store/migrations/
+internal/ai/             Bifrost account, chat with fallbacks and the tool loop
+internal/memory/         scopes, prompt assembly, facts, summaries
+internal/bot/            Discord session, triggers, commands, chunking
 ```
 
-### **Performance Issues**
+### Database migrations
 
-**High memory usage:**
-- Reduce `AI_CHANNEL_MESSAGE_LIMIT` and `REPLY_CHAIN_LIMIT`
-- Enable log rotation with smaller file sizes
-- Monitor with `htop` or `ps aux | grep python`
-
-**Slow responses:**
-- Check provider response times in logs
-- Consider using faster providers (Groq, Cerebras)
-- Reduce context window size
-
-### **Getting Help**
-
-1. **Check logs first**: `tail -f yuna.log`
-2. **Test with minimal config**: Use only one API key
-3. **Verify Discord permissions**: Bot needs proper server permissions
-4. **Check provider status**: Use `/provider_status` command
-5. **Review environment**: Ensure all required variables are set
-
----
-
-## 📊 Monitoring & Maintenance
-
-### **Log Analysis**
-
-**View real-time logs:**
-```bash
-tail -f yuna.log | grep -E "(ERROR|WARNING|SUCCESS)"
-```
-
-**Common log patterns:**
-```bash
-# Successful responses
-grep "✅ Success with" yuna.log
-
-# Rate limit hits
-grep "⚠️ Rate limit hit" yuna.log
-
-# Provider failures
-grep "🚨 All available providers failed" yuna.log
-```
-
-### **Health Checks**
-
-**System health script:**
-```bash
-#!/bin/bash
-# health_check.sh
-
-# Check if bot process is running
-if pgrep -f "yuna_bot.py" > /dev/null; then
-    echo "✅ Bot is running"
-else
-    echo "❌ Bot is not running"
-    exit 1
-fi
-
-# Check log for recent activity (last 5 minutes)
-if find yuna.log -mmin -5 | grep -q yuna.log; then
-    echo "✅ Recent activity detected"
-else
-    echo "⚠️ No recent activity"
-fi
-
-# Check database accessibility
-if sqlite3 yuna.db "SELECT COUNT(*) FROM ai_channels;" > /dev/null 2>&1; then
-    echo "✅ Database accessible"
-else
-    echo "❌ Database error"
-    exit 1
-fi
-```
-
-### **Automated Maintenance**
-
-**Log cleanup cron job:**
-```bash
-# Add to crontab: crontab -e
-0 3 * * 0 find /path/to/yuna -name "yuna.log.*" -mtime +30 -delete
-```
-
-**Database optimization:**
-```bash
-# Weekly database cleanup
-0 2 * * 0 sqlite3 /path/to/yuna.db "VACUUM;"
-```
-
----
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
-## 🙏 Acknowledgments
-
-- **[LiteLLM](https://github.com/BerriAI/litellm)** - Unified AI provider interface
-- **[Discord.py](https://github.com/Rapptz/discord.py)** - Discord API wrapper
-- **[Artificial Analysis](https://artificialanalysis.ai/)** - AI model intelligence rankings
-
----
-
-<div align="center">
-
-**Made with ❤️**
-
-[⭐ Star this repo](https://github.com/TheInternetUse7/yuna) • [🐛 Report Bug](https://github.com/TheInternetUse7/yuna/issues) • [💡 Request Feature](https://github.com/TheInternetUse7/yuna/issues)
-
-</div>
+Migrations are plain SQL files in `internal/store/migrations`, named
+`<number>_<description>.sql` and applied in ascending order inside a transaction.

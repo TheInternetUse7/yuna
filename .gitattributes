@@ -1,0 +1,7 @@
+# Normalise line endings in the repository to LF.
+#
+# Git for Windows sets core.autocrlf=true at the system level, which produces
+# the "LF will be replaced by CRLF" warnings and hands CRLF to tools on
+# checkout. Declaring it here overrides that config, so Windows, the VPS and the
+# container all see the same bytes regardless of any machine's git settings.
+* text=auto eol=lf

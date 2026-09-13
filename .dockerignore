@@ -1,0 +1,17 @@
+.git
+.github
+.venv
+plans
+_internal
+__pycache__
+*.py
+*.pyc
+*.db
+*.db-wal
+*.db-shm
+*.log
+dist
+yuna
+yuna.exe
+README.md
+.env
