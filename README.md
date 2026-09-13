@@ -31,7 +31,7 @@ that file; the essentials are:
 | `YUNA_PROVIDERS`               | yes         | -             | Ordered chain: first is primary, the rest are fallbacks       |
 | `<NAME>_MODEL`                 | yes         | -             | Provider-native model ID                                      |
 | `<NAME>_API_KEY`               | built-ins   | -             | API key for that provider                                     |
-| `<NAME>_BASE_URL`              | custom only | -             | OpenAI-compatible root including `/v1`                        |
+| `<NAME>_BASE_URL`              | custom only | -             | OpenAI-compatible host; omit `/v1`, Bifrost adds the path     |
 | `<NAME>_TOOLS`                 | no          | catalog       | Whether the `remember` tool is offered to this provider       |
 | `YUNA_MEMORY_ENABLED`          | no          | `true`        | Master switch for summaries and facts                         |
 | `YUNA_HISTORY_WINDOW`          | no          | `15`          | Messages sent as conversation context                         |
@@ -73,7 +73,7 @@ covers Ollama, vLLM, LM Studio, llama.cpp, and gateways:
 ```
 YUNA_PROVIDERS=ollama,gemini
 OLLAMA_MODEL=llama3.1:8b
-OLLAMA_BASE_URL=http://host.docker.internal:11434/v1
+OLLAMA_BASE_URL=http://host.docker.internal:11434
 GEMINI_MODEL=gemini-2.5-flash
 GEMINI_API_KEY=...
 ```

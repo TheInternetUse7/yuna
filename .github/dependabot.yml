@@ -1,5 +1,3 @@
-# Keeps the workflow actions and Go modules from falling behind again, which is
-# how the original v3/v4/v5/v6 action pins ended up unsupported.
 version: 2
 updates:
   - package-ecosystem: github-actions

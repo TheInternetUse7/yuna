@@ -24,7 +24,7 @@ type Provider struct {
 	APIKey string
 	// Tools reports whether the remember tool may be offered to this provider.
 	Tools bool
-	// BaseURL is the OpenAI-compatible root including /v1. Empty for natives.
+	// BaseURL is the OpenAI-compatible host, without /v1. Empty for native providers.
 	BaseURL string
 	// IsCustom marks a provider that must be configured through
 	// CustomProviderConfig rather than a first-class Bifrost driver.
@@ -98,7 +98,7 @@ func resolveProviders(raw string, problems *[]string) []Provider {
 		seen[name] = true
 
 		prefix := EnvPrefix(name)
-		baseURL := strings.TrimSpace(os.Getenv(prefix + "_BASE_URL"))
+		baseURL := normalizeBaseURL(os.Getenv(prefix + "_BASE_URL"))
 		model := strings.TrimSpace(os.Getenv(prefix + "_MODEL"))
 		apiKey := strings.TrimSpace(os.Getenv(prefix + "_API_KEY"))
 
@@ -170,4 +170,21 @@ func parseBool(raw string) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf("invalid boolean %q", raw)
+}
+
+// normalizeBaseURL trims whitespace and a trailing slash or /v1 from a
+// configured base URL. Bifrost appends the provider's API path to this value,
+// so the version segment belongs to Bifrost, not to the operator: the OpenAI
+// driver requests BaseURL+"/v1/chat/completions". Accepting both spellings
+// means a base URL copied from a vendor's OpenAI-compatible quickstart, which
+// almost always ends in /v1, still works.
+func normalizeBaseURL(raw string) string {
+	out := strings.TrimSpace(raw)
+	for {
+		trimmed := strings.TrimSuffix(strings.TrimRight(out, "/"), "/v1")
+		if trimmed == out {
+			return out
+		}
+		out = trimmed
+	}
 }

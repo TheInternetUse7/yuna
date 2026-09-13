@@ -20,6 +20,13 @@ type Response struct {
 	Model      string
 	IsFallback bool
 	ToolCalls  []ToolCall
+
+	// PrimaryProvider and PrimaryModel name what the request asked for first
+	// and are set only when IsFallback is true, so a caller can say which
+	// provider was skipped. The reason it was skipped lives in the debug log:
+	// Bifrost reports the failed attempt to the logger supplied at Init.
+	PrimaryProvider string
+	PrimaryModel    string
 }
 
 // ToolCall is one function call the model asked for.
@@ -51,7 +58,12 @@ type Client struct {
 
 // NewClient starts Bifrost with the configured account.
 func NewClient(ctx context.Context, account *Account, log *applog.Logger) (*Client, error) {
-	bf, err := bifrost.Init(ctx, schemas.BifrostConfig{Account: account})
+	// Routing decisions -- which provider failed and why a fallback took over --
+	// are only visible through Bifrost's own logger, so hand it Yuna's.
+	bf, err := bifrost.Init(ctx, schemas.BifrostConfig{
+		Account: account,
+		Logger:  newBifrostLogger(log),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("initialise bifrost: %w", err)
 	}
@@ -98,7 +110,12 @@ func (c *Client) do(ctx context.Context, req request) (*Response, error) {
 	if berr != nil {
 		return nil, toChatError(berr)
 	}
-	return parseResponse(resp), nil
+	out := parseResponse(resp)
+	if out.IsFallback {
+		c.log.Warnf("provider %s did not answer; %s served the request instead (see the debug log for the failure)",
+			out.PrimaryProvider, out.Provider)
+	}
+	return out, nil
 }
 
 // Chat sends one request, letting Bifrost fail over down the chain.
@@ -237,6 +254,13 @@ func parseResponse(resp *schemas.BifrostChatResponse) *Response {
 	out.Provider = string(ri.Provider)
 	out.Model = ri.Model
 	out.IsFallback = ri.IsFallback
+	// Bifrost only fills these in once fallback resolution has run.
+	if ri.PrimaryProvider != nil {
+		out.PrimaryProvider = string(*ri.PrimaryProvider)
+	}
+	if ri.PrimaryModel != nil {
+		out.PrimaryModel = *ri.PrimaryModel
+	}
 	if out.Model == "" {
 		out.Model = resp.Model
 	}

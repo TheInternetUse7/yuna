@@ -169,7 +169,9 @@ func TestLoadAcceptsBaseURLForOpenAI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Providers[0].BaseURL != "https://gateway.example/v1" {
+	// The /v1 is stripped on load: Bifrost appends the API path itself, so
+	// keeping it would produce /v1/v1/chat/completions.
+	if cfg.Providers[0].BaseURL != "https://gateway.example" {
 		t.Fatalf("base URL = %q", cfg.Providers[0].BaseURL)
 	}
 	if cfg.Providers[0].IsCustom {
@@ -200,7 +202,9 @@ func TestLoadResolvesCustomProviderAsOpenAICompatible(t *testing.T) {
 	if !p.KeyLess {
 		t.Fatal("a custom provider with no API key must be keyless")
 	}
-	if p.BaseURL != "http://127.0.0.1:8000/v1" {
+	// A trailing /v1 is accepted but stripped, because Bifrost appends
+	// /v1/chat/completions to whatever base URL it is given.
+	if p.BaseURL != "http://127.0.0.1:8000" {
 		t.Fatalf("base URL = %q", p.BaseURL)
 	}
 	if !p.Tools {
