@@ -25,8 +25,6 @@ COPY --from=builder /out/yuna /usr/local/bin/yuna
 
 USER yuna
 VOLUME ["/data"]
-
-ENV YUNA_DB_PATH=/data/yuna.db \
-    YUNA_LOG_FILE=/data/yuna.log
+WORKDIR /data
 
 ENTRYPOINT ["/usr/local/bin/yuna"]

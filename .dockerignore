@@ -14,4 +14,7 @@ dist
 yuna
 yuna.exe
 README.md
+config.yaml
+config.*.yaml
 .env
+.env.*

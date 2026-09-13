@@ -28,13 +28,16 @@ go.work.sum
 # Yuna
 # ---------------------------------------------------------------------------
 
-# Secrets. .env.example is the committed template and stays visible.
+# Secrets. config.example.yaml is the committed template and stays visible.
+# Legacy .env files may still contain secrets even though Yuna no longer reads them.
 .env
 .env.*
-!.env.example
+config.yaml
+config.*.yaml
+!config.example.yaml
 
 # Runtime state: the SQLite database with its WAL side files, and rotated logs.
-# A custom in-repo YUNA_DB_PATH / YUNA_LOG_FILE is covered by the globs.
+# Custom in-repo database and log paths are covered by the globs.
 *.db
 *.db-wal
 *.db-shm

@@ -4,7 +4,7 @@ import "testing"
 
 // Bifrost appends the API path to the configured base URL (the OpenAI driver
 // requests BaseURL+"/v1/chat/completions"). Both spellings
-// are accepted from the environment, and both must land on the bare host.
+// are accepted in YAML, and both must land on the bare host.
 func TestNormalizeBaseURL(t *testing.T) {
 	cases := map[string]string{
 		"https://ai-gateway.vercel.sh/v1":    "https://ai-gateway.vercel.sh",

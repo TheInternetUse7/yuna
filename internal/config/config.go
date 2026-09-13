@@ -1,17 +1,18 @@
-// Package config loads and validates all of Yuna's runtime settings from the
-// environment (optionally seeded from a .env file in the working directory).
+// Package config loads and validates all of Yuna's runtime settings from YAML.
 package config
 
 import (
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 
-	"github.com/joho/godotenv"
+	"gopkg.in/yaml.v3"
 )
 
-// DefaultSystemPrompt is Yuna's persona when YUNA_SYSTEM_PROMPT is unset.
+// DefaultConfigPath is used when the operator does not pass --config.
+const DefaultConfigPath = "config.yaml"
+
+// DefaultSystemPrompt is Yuna's persona when persona.system_prompt is unset.
 const DefaultSystemPrompt = "You are Yuna, a helpful AI assistant on Discord. " +
 	"Be conversational and friendly."
 
@@ -46,75 +47,116 @@ type Config struct {
 	Debug   bool
 }
 
-// Load reads .env if present, then the environment, and validates everything.
-// Every problem is reported at once rather than one per run.
-func Load() (*Config, error) {
+type fileConfig struct {
+	Discord   fileDiscord    `yaml:"discord"`
+	Providers []fileProvider `yaml:"providers"`
+	Memory    fileMemory     `yaml:"memory"`
+	Requests  fileRequests   `yaml:"requests"`
+	Persona   filePersona    `yaml:"persona"`
+	Runtime   fileRuntime    `yaml:"runtime"`
+}
+
+type fileDiscord struct {
+	Token   string `yaml:"token"`
+	GuildID string `yaml:"guild_id"`
+}
+
+type fileMemory struct {
+	Enabled           *bool  `yaml:"enabled"`
+	HistoryWindow     *int   `yaml:"history_window"`
+	SummaryEvery      *int   `yaml:"summary_every"`
+	SummaryProvider   string `yaml:"summary_provider"`
+	SummaryModel      string `yaml:"summary_model"`
+	FactsPerUserLimit *int   `yaml:"facts_per_user_limit"`
+	FactsInjectLimit  *int   `yaml:"facts_inject_limit"`
+}
+
+type fileRequests struct {
+	MaxRetries     *int `yaml:"max_retries"`
+	TimeoutSeconds *int `yaml:"timeout_seconds"`
+}
+
+type filePersona struct {
+	SystemPrompt string `yaml:"system_prompt"`
+}
+
+type fileRuntime struct {
+	DBPath  string `yaml:"db_path"`
+	LogFile string `yaml:"log_file"`
+	Debug   *bool  `yaml:"debug"`
+}
+
+// Load reads and validates one YAML configuration file. Unknown fields are
+// rejected so a renamed setting fails at boot instead of being silently
+// ignored. Every semantic problem is reported in a single error.
+func Load(path string) (*Config, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open config %q: %w", path, err)
+	}
+	defer func() { _ = file.Close() }()
+
+	decoder := yaml.NewDecoder(file)
+	decoder.KnownFields(true)
+	var fileCfg fileConfig
+	if err := decoder.Decode(&fileCfg); err != nil {
+		return nil, fmt.Errorf("parse config %q: %w", path, err)
+	}
+
 	var problems []string
 	cfg := &Config{}
 
-	// A missing .env is normal (Docker injects the environment directly), but a
-	// .env that exists and cannot be parsed must be reported: silently ignoring
-	// it turns every variable into a confusing "is required" error.
-	if err := loadDotEnv(".env"); err != nil && !os.IsNotExist(err) {
-		problems = append(problems, fmt.Sprintf(".env could not be loaded: %v", err))
-	}
-
-	cfg.DiscordToken = strings.TrimSpace(os.Getenv("DISCORD_TOKEN"))
+	cfg.DiscordToken = strings.TrimSpace(fileCfg.Discord.Token)
 	if cfg.DiscordToken == "" {
-		problems = append(problems, "DISCORD_TOKEN is required")
+		problems = append(problems, "discord.token is required")
 	}
-	cfg.GuildID = strings.TrimSpace(os.Getenv("DISCORD_GUILD_ID"))
+	cfg.GuildID = strings.TrimSpace(fileCfg.Discord.GuildID)
 
-	rawProviders := strings.TrimSpace(os.Getenv("YUNA_PROVIDERS"))
-	if rawProviders == "" {
-		problems = append(problems, "YUNA_PROVIDERS is required "+
-			"(comma-separated provider names, first entry is the primary)")
-	} else {
-		cfg.Providers = resolveProviders(rawProviders, &problems)
-	}
+	cfg.Providers = resolveProviders(fileCfg.Providers, &problems)
 
-	cfg.HistoryWindow = intEnv("YUNA_HISTORY_WINDOW", 15, 1, &problems)
-	cfg.SummaryEvery = intEnv("YUNA_SUMMARY_EVERY", 25, 1, &problems)
-	cfg.FactsPerUserLimit = intEnv("YUNA_FACTS_PER_USER_LIMIT", 50, 1, &problems)
-	cfg.FactsInjectLimit = intEnv("YUNA_FACTS_INJECT_LIMIT", 20, 1, &problems)
-	cfg.MaxRetries = intEnv("YUNA_MAX_RETRIES", 2, 0, &problems)
-	cfg.RequestTimeoutSeconds = intEnv("YUNA_REQUEST_TIMEOUT_SECONDS", 30, 1, &problems)
-	cfg.MemoryEnabled = boolEnv("YUNA_MEMORY_ENABLED", true, &problems)
+	memory := fileCfg.Memory
+	cfg.MemoryEnabled = boolSetting(memory.Enabled, true)
+	cfg.HistoryWindow = intSetting("memory.history_window", memory.HistoryWindow, 15, 1, &problems)
+	cfg.SummaryEvery = intSetting("memory.summary_every", memory.SummaryEvery, 25, 1, &problems)
+	cfg.FactsPerUserLimit = intSetting(
+		"memory.facts_per_user_limit", memory.FactsPerUserLimit, 50, 1, &problems)
+	cfg.FactsInjectLimit = intSetting(
+		"memory.facts_inject_limit", memory.FactsInjectLimit, 20, 1, &problems)
 
-	cfg.SystemPrompt = strings.TrimSpace(os.Getenv("YUNA_SYSTEM_PROMPT"))
+	requests := fileCfg.Requests
+	cfg.MaxRetries = intSetting("requests.max_retries", requests.MaxRetries, 2, 0, &problems)
+	cfg.RequestTimeoutSeconds = intSetting(
+		"requests.timeout_seconds", requests.TimeoutSeconds, 30, 1, &problems)
+
+	cfg.SystemPrompt = strings.TrimSpace(fileCfg.Persona.SystemPrompt)
 	if cfg.SystemPrompt == "" {
 		cfg.SystemPrompt = DefaultSystemPrompt
 	}
 
-	cfg.DBPath = strEnv("YUNA_DB_PATH", "yuna.db")
-	cfg.LogFile = strEnv("YUNA_LOG_FILE", "yuna.log")
-	cfg.Debug = boolEnv("YUNA_DEBUG", false, &problems)
+	runtime := fileCfg.Runtime
+	cfg.DBPath = stringDefault(runtime.DBPath, "yuna.db")
+	cfg.LogFile = stringDefault(runtime.LogFile, "yuna.log")
+	cfg.Debug = boolSetting(runtime.Debug, false)
 
-	cfg.SummaryProvider = strings.ToLower(strings.TrimSpace(os.Getenv("YUNA_SUMMARY_PROVIDER")))
-	if len(cfg.Providers) > 0 {
-		switch {
-		case cfg.SummaryProvider == "":
-			cfg.SummaryProvider = cfg.Providers[len(cfg.Providers)-1].Name
-		default:
-			if _, ok := cfg.Provider(cfg.SummaryProvider); !ok {
-				problems = append(problems, fmt.Sprintf(
-					"YUNA_SUMMARY_PROVIDER %q is not present in YUNA_PROVIDERS", cfg.SummaryProvider))
-			}
-		}
+	cfg.SummaryProvider = strings.ToLower(strings.TrimSpace(memory.SummaryProvider))
+	if cfg.SummaryProvider == "" && len(cfg.Providers) > 0 {
+		cfg.SummaryProvider = cfg.Providers[len(cfg.Providers)-1].Name
+	} else if _, ok := cfg.Provider(cfg.SummaryProvider); !ok {
+		problems = append(problems, fmt.Sprintf(
+			"memory.summary_provider %q is not present in providers", cfg.SummaryProvider))
 	}
 
 	// The summariser's model must belong to its provider: a typo here fails at
 	// the first summary refresh, long after boot, so catch it up front.
-	cfg.SummaryModel = strings.TrimSpace(os.Getenv("YUNA_SUMMARY_MODEL"))
+	cfg.SummaryModel = strings.TrimSpace(memory.SummaryModel)
 	if provider, ok := cfg.Provider(cfg.SummaryProvider); ok {
 		switch {
 		case cfg.SummaryModel == "":
 			cfg.SummaryModel = provider.Default()
 		case !provider.HasModel(cfg.SummaryModel):
 			problems = append(problems, fmt.Sprintf(
-				"YUNA_SUMMARY_MODEL %q is not one of %s_MODELS for provider %q (%s)",
-				cfg.SummaryModel, EnvPrefix(provider.Name), provider.Name,
-				strings.Join(provider.Models, ", ")))
+				"memory.summary_model %q is not a model of provider %q (%s)",
+				cfg.SummaryModel, provider.Name, strings.Join(provider.Models, ", ")))
 		}
 	}
 
@@ -124,37 +166,7 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-// loadDotEnv seeds the process environment from a .env file without
-// overwriting variables that are already set, matching godotenv.Load.
-//
-// It does not call godotenv.Load directly because that parser treats the \r of
-// a CRLF line ending as part of the value, which swallows every following line
-// into the first variable. Files edited on Windows are CRLF by default, so the
-// endings are normalised before parsing.
-func loadDotEnv(path string) error {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	normalised := strings.ReplaceAll(string(raw), "\r\n", "\n")
-	normalised = strings.ReplaceAll(normalised, "\r", "\n")
-
-	values, err := godotenv.Unmarshal(normalised)
-	if err != nil {
-		return err
-	}
-	for key, value := range values {
-		if _, alreadySet := os.LookupEnv(key); alreadySet {
-			continue
-		}
-		if err := os.Setenv(key, value); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// Provider looks up a configured provider by its configuration name.
+// Provider finds a configured provider by name, case-insensitively.
 func (c *Config) Provider(name string) (Provider, bool) {
 	name = strings.ToLower(strings.TrimSpace(name))
 	for _, p := range c.Providers {
@@ -165,10 +177,11 @@ func (c *Config) Provider(name string) (Provider, bool) {
 	return Provider{}, false
 }
 
-// Primary is the head of the chain.
+// Primary is the provider that answers unless a stored model preference moves
+// another provider to the front for a particular scope.
 func (c *Config) Primary() Provider { return c.Providers[0] }
 
-// ProviderNames lists the chain names in order.
+// ProviderNames returns the configured chain in order.
 func (c *Config) ProviderNames() []string {
 	names := make([]string, 0, len(c.Providers))
 	for _, p := range c.Providers {
@@ -177,39 +190,28 @@ func (c *Config) ProviderNames() []string {
 	return names
 }
 
-func strEnv(name, def string) string {
-	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
-		return v
+func stringDefault(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
 	}
-	return def
+	return strings.TrimSpace(value)
 }
 
-func intEnv(name string, def, min int, problems *[]string) int {
-	raw := strings.TrimSpace(os.Getenv(name))
-	if raw == "" {
-		return def
+func boolSetting(value *bool, fallback bool) bool {
+	if value == nil {
+		return fallback
 	}
-	v, err := strconv.Atoi(raw)
-	if err != nil {
-		*problems = append(*problems, fmt.Sprintf("%s must be a whole number, got %q", name, raw))
-		return def
-	}
-	if v < min {
-		*problems = append(*problems, fmt.Sprintf("%s must be at least %d, got %d", name, min, v))
-		return def
-	}
-	return v
+	return *value
 }
 
-func boolEnv(name string, def bool, problems *[]string) bool {
-	raw, ok := os.LookupEnv(name)
-	if !ok || strings.TrimSpace(raw) == "" {
-		return def
+func intSetting(name string, value *int, fallback, minimum int, problems *[]string) int {
+	if value == nil {
+		return fallback
 	}
-	v, err := parseBool(raw)
-	if err != nil {
-		*problems = append(*problems, fmt.Sprintf("%s must be true or false, got %q", name, raw))
-		return def
+	if *value < minimum {
+		*problems = append(*problems, fmt.Sprintf("%s must be at least %d, got %d",
+			name, minimum, *value))
+		return fallback
 	}
-	return v
+	return *value
 }

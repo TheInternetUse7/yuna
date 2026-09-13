@@ -32,6 +32,8 @@ func versionString() string {
 func main() {
 	checkOnly := flag.Bool("check", false,
 		"validate config, open the database and initialise the AI client, then exit without connecting to Discord")
+	configPath := flag.String("config", config.DefaultConfigPath,
+		"path to the YAML configuration file")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -40,14 +42,14 @@ func main() {
 		return
 	}
 
-	if err := run(*checkOnly); err != nil {
+	if err := run(*checkOnly, *configPath); err != nil {
 		fmt.Fprintf(os.Stderr, "yuna: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(checkOnly bool) error {
-	cfg, err := config.Load()
+func run(checkOnly bool, configPath string) error {
+	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
 	}

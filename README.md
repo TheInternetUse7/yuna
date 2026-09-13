@@ -7,12 +7,13 @@ A Discord chatbot with memory, written in Go and backed by
 
 - Go 1.27 or newer to build from source (or Docker).
 - A Discord application with a bot user.
-- At least one provider API key.
+- A configured provider; built-in providers need API keys, while local custom
+  endpoints can be keyless.
 
 ### Discord setup
 
 1. Create an application at <https://discord.com/developers/applications>.
-2. Under **Bot**, copy the token into `DISCORD_TOKEN`.
+2. Under **Bot**, copy the token into `discord.token` in `config.yaml`.
 3. Under **Bot -> Privileged Gateway Intents**, enable **Message Content** and
    **Server Members**. Both are required: without the first the bot receives
    empty message content, and without the second it cannot resolve member
@@ -21,51 +22,71 @@ A Discord chatbot with memory, written in Go and backed by
 
 ## Configuration
 
-Copy `.env.example` to `.env` and fill it in. Every setting is documented in
-that file; the essentials are:
+Copy `config.example.yaml` to `config.yaml` and fill it in. Every setting is
+documented in that file. Unknown fields are rejected so typos fail at startup;
+the main paths are:
 
-| Variable                       | Required    | Default       | Purpose                                                       |
-| ------------------------------ | ----------- | ------------- | ------------------------------------------------------------- |
-| `DISCORD_TOKEN`                | yes         | -             | Bot token                                                     |
-| `DISCORD_GUILD_ID`             | no          | global        | Register commands on one server (instant) instead of globally |
-| `YUNA_PROVIDERS`               | yes         | -             | Ordered chain: first is primary, the rest are fallbacks       |
-| `<NAME>_MODELS`                | yes         | -             | Comma-separated model IDs, tried in order; first is default   |
-| `<NAME>_API_KEY`               | built-ins   | -             | API key for that provider                                     |
-| `<NAME>_BASE_URL`              | custom only | -             | OpenAI-compatible host; omit `/v1`, Bifrost adds the path     |
-| `<NAME>_TOOLS`                 | no          | catalog       | Whether the `remember` tool is offered to this provider       |
-| `YUNA_MEMORY_ENABLED`          | no          | `true`        | Master switch for summaries and facts                         |
-| `YUNA_HISTORY_WINDOW`          | no          | `15`          | Messages sent as conversation context                         |
-| `YUNA_SUMMARY_EVERY`           | no          | `25`          | New messages before a summary refresh                         |
-| `YUNA_SUMMARY_PROVIDER`        | no          | last in chain | Provider used for summaries                                   |
-| `YUNA_SUMMARY_MODEL`           | no          | provider's first model | Model used for summaries                             |
-| `YUNA_FACTS_PER_USER_LIMIT`    | no          | `50`          | Stored facts per person per scope                             |
-| `YUNA_FACTS_INJECT_LIMIT`      | no          | `20`          | Facts injected into one prompt                                |
-| `YUNA_MAX_RETRIES`             | no          | `2`           | Retries per provider before failing over                      |
-| `YUNA_REQUEST_TIMEOUT_SECONDS` | no          | `30`          | Per-request timeout                                           |
-| `YUNA_SYSTEM_PROMPT`           | no          | built-in      | Replaces the persona                                          |
-| `YUNA_DB_PATH`                 | no          | `yuna.db`     | `/data/yuna.db` in the container                              |
-| `YUNA_LOG_FILE`                | no          | `yuna.log`    | `/data/yuna.log` in the container                             |
-| `YUNA_DEBUG`                   | no          | `false`       | `1` enables debug logging                                     |
+| Path                                | Required    | Default       | Purpose                                                       |
+| ----------------------------------- | ----------- | ------------- | ------------------------------------------------------------- |
+| `discord.token`                     | yes         | -             | Bot token                                                     |
+| `discord.guild_id`                  | no          | global        | Register commands on one server (instant) instead of globally |
+| `providers`                         | yes         | -             | Ordered chain: first is primary, the rest are fallbacks       |
+| `providers[].name`                  | yes         | -             | Built-in name or custom provider name                         |
+| `providers[].api_key`               | built-ins   | -             | API key for that provider                                     |
+| `providers[].base_url`              | custom only | -             | OpenAI-compatible host; omit `/v1`, Bifrost adds the path     |
+| `providers[].tools`                 | no          | catalog       | Whether the `remember` tool is offered to this provider       |
+| `providers[].models`                | yes         | -             | Ordered model IDs; the first is the provider default          |
+| `providers[].models[].image_input`  | no          | `false`       | Whether that model may receive image attachments              |
+| `memory.enabled`                    | no          | `true`        | Master switch for summaries and facts                         |
+| `memory.history_window`             | no          | `15`          | Messages sent as conversation context                         |
+| `memory.summary_every`              | no          | `25`          | New messages before a summary refresh                         |
+| `memory.summary_provider`           | no          | last provider | Provider used for summaries                                   |
+| `memory.summary_model`              | no          | first model   | Model used for summaries                                      |
+| `memory.facts_per_user_limit`       | no          | `50`          | Stored facts per person per scope                             |
+| `memory.facts_inject_limit`         | no          | `20`          | Facts injected into one prompt                                |
+| `requests.max_retries`              | no          | `2`           | Retries per provider before failing over                      |
+| `requests.timeout_seconds`          | no          | `30`          | Per-request timeout                                           |
+| `persona.system_prompt`             | no          | built-in      | Replaces the persona                                          |
+| `runtime.db_path`                   | no          | `yuna.db`     | Database path; `/data/yuna.db` in the container               |
+| `runtime.log_file`                  | no          | `yuna.log`    | Log path; `/data/yuna.log` in the container                   |
+| `runtime.debug`                     | no          | `false`       | Enables debug logging                                         |
 
 ### Choosing providers
 
-Each provider takes a comma-separated list of models, tried in the order given,
-and `YUNA_PROVIDERS` orders the providers themselves. A request starts at the
-first model of the first provider, then works through that provider's remaining
-models, then the next provider:
+Each provider takes an ordered model list, and the top-level `providers` list
+orders the vendors themselves. A request starts at the first model of the first
+provider, then works through that provider's remaining models, then the next
+provider:
 
-```
-YUNA_PROVIDERS=gemini,groq,openrouter
-GEMINI_MODELS=gemini-2.5-flash,gemini-2.5-pro
-GEMINI_API_KEY=...
-GROQ_MODELS=llama-3.3-70b-versatile,llama-3.1-8b-instant
-GROQ_API_KEY=...
-OPENROUTER_MODELS=anthropic/claude-3.5-sonnet
-OPENROUTER_API_KEY=...
+```yaml
+providers:
+  - name: gemini
+    api_key: ...
+    models:
+      - id: gemini-2.5-flash
+        image_input: true
+      - id: gemini-2.5-pro
+        image_input: true
+  - name: groq
+    api_key: ...
+    models:
+      - id: llama-3.3-70b-versatile
+      - id: llama-3.1-8b-instant
+  - name: openrouter
+    api_key: ...
+    models:
+      - id: anthropic/claude-3.5-sonnet
+        image_input: true
 ```
 
 That ladder is what keeps a rate-limited or retired model from taking the whole
 vendor out of rotation.
+
+Image input is a model capability. Set `image_input: true` only on models that
+can see images. When a Discord message has image attachments, Yuna narrows the
+same provider/model ladder to those models and sends the newest user message as
+text plus image blocks. If no configured model supports images, she says so
+instead of silently dropping the attachment.
 
 ### Choosing a model from Discord
 
@@ -83,16 +104,20 @@ Built-in names: `gemini`, `openai`, `anthropic`, `groq`, `cerebras`,
 Any other name becomes a custom provider as soon as you give it a base URL. This
 covers Ollama, vLLM, LM Studio, llama.cpp, and gateways:
 
-```
-YUNA_PROVIDERS=ollama,gemini
-OLLAMA_MODELS=llama3.1:8b
-OLLAMA_BASE_URL=http://host.docker.internal:11434
-GEMINI_MODELS=gemini-2.5-flash
-GEMINI_API_KEY=...
+```yaml
+providers:
+  - name: ollama
+    base_url: http://host.docker.internal:11434
+    models:
+      - id: llama3.1:8b
+  - name: gemini
+    api_key: ...
+    models:
+      - id: gemini-2.5-flash
 ```
 
-No API key is needed for a custom endpoint; omit `<NAME>_API_KEY` and the
-provider is registered as keyless. A private or loopback base URL is allowed
+No API key is needed for a custom endpoint; omit `api_key` and the provider is
+registered as keyless. A private or loopback base URL is allowed
 automatically, while public hosts still go through the normal path.
 
 Because custom providers keep their own name, two OpenAI-compatible endpoints
@@ -158,25 +183,28 @@ Nothing expires on its own.
 ### Locally
 
 ```bash
-go run . -check   # validate .env, open and migrate the database, then exit
+go run . -check   # validate config.yaml, open and migrate the database, then exit
 go run .
 ```
 
-`-check` is the quick way to test a configuration change: it loads `.env`,
-validates every provider, opens the SQLite database and initialises the AI
-client, then exits without connecting to Discord.
+`-check` is the quick way to test a configuration change: it loads the YAML
+file, validates every provider, opens the SQLite database and initialises the
+AI client, then exits without connecting to Discord.
 
-`.env` is read from the working directory, so run these from the repository
-root. Variables already present in the environment win over the file.
+`config.yaml` is read from the working directory by default. Pass
+`-config path/to/file.yaml` to use another path.
 
 ### Docker
 
 ```bash
 docker build -t yuna:test .
-docker run --rm --env-file .env -v yuna-data:/data yuna:test
+docker run --rm -v "$PWD/config.yaml:/data/config.yaml:ro" -v yuna-data:/data yuna:test
 ```
 
 ### On the server
+
+Create `config.yaml` next to `docker-compose.yml`; Compose mounts it read-only
+into `/data/config.yaml`.
 
 `docker-compose.yml` pulls the published image:
 
@@ -191,6 +219,9 @@ The image is `ghcr.io/theinternetuse7/yuna`.
 ### Backups
 
 The database lives on the `yuna-data` named volume.
+
+`config.yaml` is mounted from the host and is not part of the volume; back it up
+separately.
 
 SQLite runs in WAL mode. Stop the container first: on a
 clean shutdown SQLite checkpoints the WAL back into `yuna.db`.
@@ -219,7 +250,7 @@ existing named volume alone, so your data survives them. Only
 
 ## Health and logs
 
-Logs go to stdout (for `docker logs`) and to `YUNA_LOG_FILE`, which rotates at
+Logs go to stdout (for `docker logs`) and to `runtime.log_file`, which rotates at
 10 MiB with three compressed backups kept.
 
 ## Development
@@ -236,7 +267,7 @@ Layout:
 ```
 main.go                  wiring: config -> logger -> store -> ai -> bot, and shutdown
 internal/applog/         leveled console + rotating file logging
-internal/config/         environment loading, provider catalog, validation
+internal/config/         YAML loading, provider catalog, validation
 internal/store/          SQLite, with ordered migrations
 internal/store/migrations/
 internal/ai/             Bifrost account, chat with fallbacks and the tool loop

@@ -16,7 +16,7 @@ import (
 //
 // Bifrost formats with fmt verbs ("%s", "%v"), so every call goes through
 // Sprintf; applog then applies the debug switch, which keeps these lines quiet
-// until YUNA_DEBUG is on.
+// until runtime.debug is enabled.
 type bifrostLogger struct {
 	log *applog.Logger
 }
@@ -69,7 +69,7 @@ func (b *bifrostLogger) Fatal(msg string, args ...any) {
 }
 
 // SetLevel and SetOutputType are no-ops: verbosity is owned by applog so a
-// single YUNA_DEBUG switch controls both Yuna's lines and Bifrost's.
+// single runtime.debug switch controls both Yuna's lines and Bifrost's.
 func (b *bifrostLogger) SetLevel(schemas.LogLevel)              {}
 func (b *bifrostLogger) SetOutputType(schemas.LoggerOutputType) {}
 

@@ -1,0 +1,68 @@
+# Copy this file to config.yaml, fill in the secrets, and keep both files out
+# of version control. On Docker, config.yaml is mounted at /data/config.yaml.
+
+discord:
+  # Bot token from https://discord.com/developers/applications -> Bot -> Reset Token.
+  token: ""
+
+  # Optional. When set, slash commands are registered on this one guild and
+  # appear immediately. Leave empty for global commands, which can take an hour.
+  guild_id: ""
+
+# The ordered provider chain. The first entry is primary; every later entry is
+# a fallback that Bifrost uses automatically if the one before it fails.
+providers:
+  - name: gemini
+    api_key: ""
+    models:
+      - id: gemini-flash-latest
+        image_input: true
+      - id: gemini-pro-latest
+        image_input: true
+
+  - name: groq
+    api_key: ""
+    models:
+      - id: llama-3.3-70b-versatile
+      - id: llama-3.1-8b-instant
+
+  - name: openrouter
+    api_key: ""
+    models:
+      - id: anthropic/claude-3.5-sonnet
+        image_input: true
+
+  # Any name not in the built-in catalog becomes an OpenAI-compatible custom
+  # provider when base_url is set. Omit api_key for keyless local endpoints.
+  #
+  # - name: my-vllm
+  #   base_url: http://127.0.0.1:8000
+  #   tools: false
+  #   models:
+  #     - id: qwen2.5-14b-instruct
+
+memory:
+  enabled: true
+  history_window: 15
+  summary_every: 25
+
+  # Defaults to the last provider in the chain, and summary_model defaults to
+  # that provider's first model. Set both to keep memory on a cheaper model.
+  summary_provider: ""
+  summary_model: ""
+
+  facts_per_user_limit: 50
+  facts_inject_limit: 20
+
+requests:
+  max_retries: 2
+  timeout_seconds: 30
+
+persona:
+  # Leave empty to use the built-in Yuna persona.
+  system_prompt: ""
+
+runtime:
+  db_path: yuna.db
+  log_file: yuna.log
+  debug: false

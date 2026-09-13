@@ -9,19 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `YUNA_SUMMARY_MODEL` pins the model used for memory summaries, validated
+- Discord image attachments are sent to models marked `image_input: true`;
+  image-bearing turns use only that capability ladder.
+- `-config` selects a YAML configuration path; the default is `config.yaml`.
+- `memory.summary_model` pins the model used for memory summaries, validated
   against the chosen summary provider's model list.
 
 ### Changed
 
-- Providers take a comma-separated `<NAME>_MODELS` list instead of a single
-  `<NAME>_MODEL`. The first entry is the default and the rest are fallbacks for
-  that provider, tried before the chain moves on.
+- Configuration now uses strict `config.yaml` files instead of `.env` and
+  environment variables. There is no backward-compatibility layer.
+- Providers and models are structured YAML entries. Providers have ordered model
+  lists and tool support; models can declare image input.
 - `/model` replaces `/set_preferred_model` and `/clear_preferred_model`. It has
   `set id:<model>` and `reset` subcommands, and `id` autocompletes over every
   configured model.
 - A model choice is now stored per server for administrators and per user for
   DMs, rather than per server only.
+
+### Removed
+
+- The `.env` loader and `.env.example` template.
 
 ## [0.1.0] - 2026-09-13
 

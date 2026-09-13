@@ -19,8 +19,9 @@ import (
 const generateTimeout = 2 * time.Minute
 
 const (
-	rememberToolName = "remember"
-	emptyReply       = "I could not come up with anything to say to that."
+	rememberToolName  = "remember"
+	emptyReply        = "I could not come up with anything to say to that."
+	noImageModelReply = "None of my configured models can see images right now."
 )
 
 // onMessage is the gateway entry point for messages.
@@ -94,6 +95,18 @@ func (b *Bot) generate(msg *discordgo.Message) {
 	b.log.Debugf("generating reply for message %s in channel %s", msg.ID, msg.ChannelID)
 	turn := turnFromMessage(msg)
 	chain := b.chain(msg.GuildID, msg.Author.ID)
+	images := imageAttachments(msg)
+	if len(images) > 0 {
+		chain = imageChain(chain)
+		if len(chain) == 0 {
+			b.log.Warnf("message %s in channel %s has images but no configured model supports image input",
+				msg.ID, msg.ChannelID)
+			if _, err := b.sendReply(msg, noImageModelReply); err != nil {
+				b.log.Errorf("send no-image-model notice in channel %s: %v", msg.ChannelID, err)
+			}
+			return
+		}
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), generateTimeout)
 	defer cancel()
@@ -106,6 +119,8 @@ func (b *Bot) generate(msg *discordgo.Message) {
 
 	stopTyping := b.startTyping(msg.ChannelID)
 	defer stopTyping()
+
+	msgs = attachImages(msgs, images)
 
 	resp, err := b.chat.ChatWithTools(ctx, chain[0], chain, msgs, b.tools(),
 		func(ctx context.Context, call ai.ToolCall) string {

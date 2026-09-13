@@ -2,15 +2,14 @@ package config
 
 import (
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// Provider is one entry in the ordered provider chain. The first entry in
-// YUNA_PROVIDERS is the primary; the rest become Bifrost fallbacks.
+// Provider is one entry in the ordered provider chain. The first entry is the
+// primary; the rest become Bifrost fallbacks.
 type Provider struct {
 	// Name is the configuration name, e.g. "gemini" or "my-vllm". It is also
 	// the name used to address the provider in Bifrost requests, so a custom
@@ -23,6 +22,8 @@ type Provider struct {
 	// the rest are per-model fallbacks, which is what lets a single 429 or a
 	// retired model roll within one vendor instead of leaving it.
 	Models []string
+	// ImageModels lists the subset of Models that accept image input.
+	ImageModels []string
 	// APIKey is empty for keyless custom endpoints such as local Ollama.
 	APIKey string
 	// Tools reports whether the remember tool may be offered to this provider.
@@ -36,26 +37,17 @@ type Provider struct {
 	KeyLess bool
 }
 
-// Default is the model this provider answers with when nothing overrides it.
-// resolveProviders guarantees at least one model, so this never panics on a
-// provider built by Load.
-func (p Provider) Default() string {
-	if len(p.Models) == 0 {
-		return ""
-	}
-	return p.Models[0]
+type fileProvider struct {
+	Name    string      `yaml:"name"`
+	APIKey  string      `yaml:"api_key"`
+	BaseURL string      `yaml:"base_url"`
+	Tools   *bool       `yaml:"tools"`
+	Models  []fileModel `yaml:"models"`
 }
 
-// HasModel reports whether id appears in this provider's model list. The
-// comparison is exact: model IDs are vendor identifiers, and some vendors
-// ship names that differ only by case.
-func (p Provider) HasModel(id string) bool {
-	for _, m := range p.Models {
-		if m == id {
-			return true
-		}
-	}
-	return false
+type fileModel struct {
+	ID         string `yaml:"id"`
+	ImageInput bool   `yaml:"image_input"`
 }
 
 type catalogEntry struct {
@@ -98,130 +90,129 @@ func CatalogNames() []string {
 	return names
 }
 
-// EnvPrefix turns a provider name into its environment variable prefix:
-// lowercase with dashes replaced by underscores, uppercased.
-func EnvPrefix(name string) string {
-	return strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
+// Default is the model this provider answers with when nothing overrides it.
+// resolveProviders guarantees at least one model, so this never panics on a
+// provider built by Load.
+func (p Provider) Default() string {
+	if len(p.Models) == 0 {
+		return ""
+	}
+	return p.Models[0]
 }
 
-// resolveProviders parses the ordered YUNA_PROVIDERS list and fills in each
-// provider from its environment variables. Problems are appended, not fatal,
-// so the caller can report every misconfiguration at once.
-func resolveProviders(raw string, problems *[]string) []Provider {
-	seen := make(map[string]bool)
-	var providers []Provider
+// HasModel reports whether id appears in this provider's model list. The
+// comparison is exact: model IDs are vendor identifiers, and some vendors
+// ship names that differ only by case.
+func (p Provider) HasModel(id string) bool {
+	for _, m := range p.Models {
+		if m == id {
+			return true
+		}
+	}
+	return false
+}
 
-	for _, part := range strings.Split(raw, ",") {
-		name := strings.ToLower(strings.TrimSpace(part))
+// SupportsImages reports whether the named model can consume image input. Like
+// HasModel, the comparison is exact because model IDs are vendor identifiers.
+func (p Provider) SupportsImages(id string) bool {
+	for _, m := range p.ImageModels {
+		if m == id {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveProviders(fileProviders []fileProvider, problems *[]string) []Provider {
+	if len(fileProviders) == 0 {
+		*problems = append(*problems, "providers requires at least one entry")
+		return nil
+	}
+
+	seenProviders := make(map[string]bool, len(fileProviders))
+	providers := make([]Provider, 0, len(fileProviders))
+	for index, fileProvider := range fileProviders {
+		name := strings.ToLower(strings.TrimSpace(fileProvider.Name))
 		if name == "" {
+			*problems = append(*problems, fmt.Sprintf("providers[%d].name is required", index))
 			continue
 		}
-		if seen[name] {
-			*problems = append(*problems, fmt.Sprintf("YUNA_PROVIDERS lists %q more than once", name))
+		if seenProviders[name] {
+			*problems = append(*problems, fmt.Sprintf("providers lists %q more than once", name))
 			continue
 		}
-		seen[name] = true
+		seenProviders[name] = true
 
-		prefix := EnvPrefix(name)
-		baseURL := normalizeBaseURL(os.Getenv(prefix + "_BASE_URL"))
-		apiKey := strings.TrimSpace(os.Getenv(prefix + "_API_KEY"))
-
-		p := Provider{Name: name, APIKey: apiKey}
+		baseURL := normalizeBaseURL(fileProvider.BaseURL)
+		apiKey := strings.TrimSpace(fileProvider.APIKey)
+		provider := Provider{Name: name, APIKey: apiKey, BaseURL: baseURL}
 
 		entry, isCatalog := providerCatalog[name]
+		usable := true
+		if isCatalog && apiKey == "" {
+			*problems = append(*problems, fmt.Sprintf("%s API key is required for provider %q",
+				strings.ToUpper(strings.ReplaceAll(name, "-", "_")), name))
+		}
 		switch {
 		case isCatalog && baseURL == "":
-			p.Driver = entry.driver
-			p.Tools = entry.tools
-
+			provider.Driver = entry.driver
+			provider.Tools = entry.tools
 		case isCatalog && entry.driver == schemas.OpenAI:
 			// A gateway or proxy speaking the OpenAI wire format.
-			p.Driver = entry.driver
-			p.Tools = entry.tools
-			p.BaseURL = baseURL
-
+			provider.Driver = entry.driver
+			provider.Tools = entry.tools
 		case isCatalog:
 			*problems = append(*problems, fmt.Sprintf(
-				"%s_BASE_URL is set but %q is a built-in provider that cannot be redirected; "+
-					"remove it or use a custom provider name (e.g. %s-proxy)", prefix, name, name))
-			continue
-
+				"provider %q is built-in and cannot be redirected by base_url; "+
+					"remove base_url or use a custom provider name (e.g. %s-proxy)", name, name))
+			usable = false
 		case baseURL != "":
 			// Any other name with a base URL becomes an OpenAI-compatible custom.
-			p.Driver = schemas.ModelProvider(name)
-			p.Tools = true
-			p.BaseURL = baseURL
-			p.IsCustom = true
-			p.KeyLess = apiKey == ""
-
+			provider.Driver = schemas.ModelProvider(name)
+			provider.Tools = true
+			provider.IsCustom = true
+			provider.KeyLess = apiKey == ""
 		default:
 			*problems = append(*problems, fmt.Sprintf(
-				"unknown provider %q: not one of the built-in providers (%s) and %s_BASE_URL is not set",
-				name, strings.Join(CatalogNames(), ", "), prefix))
-			continue
+				"unknown provider %q: not one of the built-in providers (%s), and base_url is not set",
+				name, strings.Join(CatalogNames(), ", ")))
+			usable = false
 		}
 
-		models := modelsFromEnv(os.Getenv(prefix+"_MODELS"), name, problems)
-		if len(models) == 0 {
-			*problems = append(*problems, fmt.Sprintf("%s_MODELS is required for provider %q", prefix, name))
+		if fileProvider.Tools != nil {
+			provider.Tools = *fileProvider.Tools
 		}
-		p.Models = models
-		// Custom providers may legitimately be keyless (local Ollama, vLLM).
-		// Built-ins always need a key.
-		if isCatalog && apiKey == "" {
-			*problems = append(*problems, fmt.Sprintf("%s_API_KEY is required for provider %q", prefix, name))
+
+		if len(fileProvider.Models) == 0 {
+			*problems = append(*problems, fmt.Sprintf("provider %q requires at least one model", name))
 		}
-		if raw, ok := os.LookupEnv(prefix + "_TOOLS"); ok && strings.TrimSpace(raw) != "" {
-			if v, err := parseBool(raw); err == nil {
-				p.Tools = v
-			} else {
-				*problems = append(*problems, fmt.Sprintf("%s_TOOLS must be true or false, got %q", prefix, raw))
+		seenModels := make(map[string]bool, len(fileProvider.Models))
+		for _, model := range fileProvider.Models {
+			id := strings.TrimSpace(model.ID)
+			if id == "" {
+				*problems = append(*problems, fmt.Sprintf("provider %q has a model with an empty id", name))
+				continue
+			}
+			if seenModels[id] {
+				*problems = append(*problems, fmt.Sprintf(
+					"provider %q has duplicate model %q", name, id))
+				continue
+			}
+			seenModels[id] = true
+			provider.Models = append(provider.Models, id)
+			if model.ImageInput {
+				provider.ImageModels = append(provider.ImageModels, id)
 			}
 		}
-
-		providers = append(providers, p)
+		if usable {
+			providers = append(providers, provider)
+		}
 	}
 
 	if len(providers) == 0 {
-		*problems = append(*problems, "YUNA_PROVIDERS did not contain any usable provider names")
+		*problems = append(*problems, "providers requires at least one usable entry")
 	}
 	return providers
-}
-
-func parseBool(raw string) (bool, error) {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "1", "true", "yes", "on":
-		return true, nil
-	case "0", "false", "no", "off":
-		return false, nil
-	}
-	return false, fmt.Errorf("invalid boolean %q", raw)
-}
-
-// modelsFromEnv parses a provider's <PREFIX>_MODELS list: comma-separated
-// model IDs in the order they should be tried. A repeated ID is reported and
-// dropped, because trying the same model twice only burns a fallback slot and
-// doubles the latency of a failing request. Order is preserved, since the
-// operator's ordering is the priority.
-func modelsFromEnv(raw, provider string, problems *[]string) []string {
-	var models []string
-	seen := make(map[string]bool)
-
-	for _, part := range strings.Split(raw, ",") {
-		model := strings.TrimSpace(part)
-		if model == "" {
-			continue
-		}
-		if seen[model] {
-			*problems = append(*problems, fmt.Sprintf(
-				"%s_MODELS lists model %q more than once for provider %q",
-				EnvPrefix(provider), model, provider))
-			continue
-		}
-		seen[model] = true
-		models = append(models, model)
-	}
-	return models
 }
 
 // normalizeBaseURL trims whitespace and a trailing slash or /v1 from a
